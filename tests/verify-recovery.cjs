@@ -20,7 +20,7 @@ assert(source.includes('RE::bhkWorld::GetWorldScaleInverse()'));
 assert(source.includes('turn / delta'));
 assert(source.includes('actor->EnableAI(saved.aiEnabled)'));
 assert(source.includes('actor->SetLifeState(saved.lifeState)'));
-assert(source.includes("save->OpenRecord('NMNT', 4)"));
+assert(source.includes("save->OpenRecord('NMNT', 5)"));
 assert(source.includes('else if (!hadTarget)'));
 const code = `
 #include <cassert>
@@ -35,7 +35,7 @@ struct Flags {
   template<class T> void reset(T bits) { value &= ~static_cast<unsigned>(bits); }
 };
 struct Actor { bool enabled{true}; int aiCalls{}, lifeCalls{};
-  enum class BOOL_FLAGS : unsigned { kForceAnimGraphUpdate=1u<<29 };
+  enum class BOOL_FLAGS : unsigned { kForceAnimGraphUpdate=1u<<29,kMovementBlocked=1u<<27 };
   ACTOR_LIFE_STATE life=ACTOR_LIFE_STATE::kAlive;
   struct { Flags boolFlags; } data;
   bool IsAIEnabled() { return enabled; } void EnableAI(bool b) { enabled=b; ++aiCalls; }
@@ -46,6 +46,7 @@ struct Actor { bool enabled{true}; int aiCalls{}, lifeCalls{};
   unsigned GetFormID() { return 1; }
 };
 }
+namespace Extras {bool leashed=false;bool Leashed(RE::Actor*){return leashed;}}
 constexpr unsigned ownedFlags=(1u<<27)|(1u<<20)|(1u<<21)|(1u<<29);
 struct { struct State { unsigned originalFlags{}; } state; State& at(unsigned) { return state; } } targets;
 ${body('HoldPose')}
@@ -63,6 +64,8 @@ int main() {
   HoldPose(&frozen); assert(frozen.aiCalls==1 && frozen.lifeCalls==1);
   RE::Actor alreadyRestrained; alreadyRestrained.life=RE::ACTOR_LIFE_STATE::kRestrained;
   HoldPose(&alreadyRestrained); assert(alreadyRestrained.lifeCalls==0);
+  Extras::leashed=true;HoldPose(&alreadyRestrained);assert(alreadyRestrained.life==RE::ACTOR_LIFE_STATE::kAlive&&!(alreadyRestrained.data.boolFlags.value&(1u<<27)));
+  Extras::leashed=false;HoldPose(&alreadyRestrained);assert(alreadyRestrained.life==RE::ACTOR_LIFE_STATE::kRestrained&&(alreadyRestrained.data.boolFlags.value&(1u<<27)));
   RE::Actor dead; dead.life=RE::ACTOR_LIFE_STATE::kDead;
   HoldPose(&dead); assert(dead.life==RE::ACTOR_LIFE_STATE::kDead);
   for (unsigned version=1;version<=4;++version) {

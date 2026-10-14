@@ -9,6 +9,7 @@ p.add_argument('--codec',required=True);p.add_argument('--bsa-lib',required=True
 p.add_argument('--data',required=True);p.add_argument('--calibration',required=True)
 p.add_argument('--hkxconv',required=True);p.add_argument('--hkxcmd',required=True)
 p.add_argument('--output',help='Candidate package directory; defaults to repo/dist')
+p.add_argument('--crawl-dir',help='Read-only human crawl source; replaces horse retargeting')
 args=p.parse_args();sys.path.insert(0,args.codec);sys.path.insert(0,args.bsa_lib)
 from anim_skyrim import load_skyrim_animation,load_skyrim_skeleton,write_skyrim_animation,_parse_hkx_sections,_parse_virtual_fixups
 from anim_fo4 import AnimationData,TrackData
@@ -98,7 +99,6 @@ def convert(name,sourceName,reverse=False):
   a.duration=0.2 if name=='takeoff' else 0.3;a.frame_duration=a.duration/(a.num_frames-1)
  return sdk(name,a)
 sources={0:('idle','idle'),1:('walk','walkforward'),2:('run','runforward'),3:('sprint','sprintforward'),4:('back','walkforward'),5:('left','turnloopingl'),6:('right','turnloopingr'),7:('takeoff','jumpstart'),8:('air','jumpfall'),9:('land','jumpland')}
-clips={rank:convert(name,source,rank==4) for rank,(name,source) in sources.items()}
 def full_human(original):
  a=copy.deepcopy(original);a.num_tracks=99;a.bone_names=list(S.bones);a.track_to_bone_indices=list(range(99))
  a.tracks=[TrackData(translations=[list(b.translation) for _ in range(a.num_frames)],rotations=[list(b.rotation) for _ in range(a.num_frames)],scales=[list(b.scale) for _ in range(a.num_frames)]) for b in S.reference_pose]
@@ -107,6 +107,32 @@ def full_human(original):
   assert -1<=index<99,index
   if index>=0:a.tracks[index]=copy.deepcopy(tr)
  return a
+
+if args.crawl_dir:
+ crawl=Path(args.crawl_dir)
+ crawlFiles={0:'female/mt_idle.hkx',1:'female/mt_walkforward.hkx',2:'female/mt_runforward.hkx',3:'female/mt_sprintforward.hkx',4:'female/mt_walkforward.hkx',5:'mt_turnleft60.hkx',6:'mt_turnright60.hkx',7:'female/mt_idle.hkx',8:'female/mt_idle.hkx',9:'female/mt_idle.hkx'}
+ clips={};seatBone=S.bones.index('NPC Spine2 [Spn2]');comBone=S.bones.index('NPC COM [COM ]')
+ for rank,(name,_) in sources.items():
+  original=load_skyrim_animation(str(crawl/crawlFiles[rank]));assert original.num_tracks==99 and original.blend_hint==0
+  a=full_human(original)
+  # Jump height comes from the player's physical controller, not a second
+  # animated root displacement. Hold the crawl pose during airborne phases.
+  if rank in (7,8,9):
+   for tr in a.tracks:
+    for attr in ['translations','rotations','scales']:
+     first=list(getattr(tr,attr)[0]);setattr(tr,attr,[first[:] for _ in range(a.num_frames)])
+  if rank==4:
+   for tr in a.tracks:
+    for attr in ['translations','rotations','scales']:getattr(tr,attr).reverse()
+  # Fix the back's seating anchor across every gait. Only authored COM changes;
+  # limb rotation remains the donor's human crawl, with no runtime node writes.
+  for frame in range(a.num_frames):
+   pos,rs=world(S,*pose(S,a,frame));offset=bp[seatBone]-pos[seatBone];parent=S.parents[comBone]
+   local=offset if parent<0 else rs[parent].T@offset
+   a.tracks[comBone].translations[frame]=(np.array(a.tracks[comBone].translations[frame])+local).tolist()
+  clips[rank]=sdk(name,a)
+else:
+ clips={rank:convert(name,source,rank==4) for rank,(name,source) in sources.items()}
 riderPath=next(s for s in entries if s.endswith('mc_1hm_idle.hkx') and 'horse_rider' in s)
 rider=full_human(load_skyrim_animation(str(extract(riderPath.replace('\\','/')))))
 # Author the seat in model-space, not by moving scene nodes after animation/SMP.
@@ -119,6 +145,10 @@ _,riderWorld=world(S,*pose(S,rider,0))
 localSeat=seatOffset if parent<0 else riderWorld[parent].T@seatOffset
 for frame in range(rider.num_frames):
  rider.tracks[com].translations[frame]=(np.array(rider.tracks[com].translations[frame])+localSeat).tolist()
+# A stable rider pose must not inherit the horse rider idle's own body bob.
+for tr in rider.tracks:
+ for attribute in ['translations','rotations','scales']:
+  value=list(getattr(tr,attribute)[0]);setattr(tr,attribute,[value[:] for _ in range(rider.num_frames)])
 humanIdlePath=next(k for k in entries if k.startswith('meshes\\actors\\character\\animations\\') and k.endswith('\\mt_idle.hkx'))
 humanIdle=full_human(load_skyrim_animation(str(extract(humanIdlePath.replace('\\','/')))))
 cameraIndices=[S.bones.index(n) for n in ['Camera3rd [Cam3]','Camera Control']]
@@ -146,7 +176,8 @@ for key in entries:
  relative=key[len(prefix):].replace('\\','/')
  if '/' in relative and not relative.startswith('female/'):continue
  filename=relative.rsplit('/',1)[-1]
- if filename.startswith(('mt_idle','mt_walk','mt_run','mt_sprint','mt_turn','mt_jump','sneakwalk','sneakrun','sneak_turn')) or filename in ['sneakmtidle.hkx','jumpstart.hkx','jumpfall.hkx','jumpland.hkx','jumpstart_sprint.hkx','jumpfall_sprint.hkx','jumpland_sprint.hkx']:
+ locomotion=any(token in filename for token in ['walk','run','sprint','turn']) and not any(token in filename for token in ['attack','block','whirlwind','behavior'])
+ if locomotion or filename.startswith(('mt_idle','mt_jump')) or filename in ['sneakmtidle.hkx','jumpstart.hkx','jumpfall.hkx','jumpland.hkx','jumpstart_sprint.hkx','jumpfall_sprint.hkx','jumpland_sprint.hkx']:
   aliases.add(filename)
   aliasBindings[relative]=load_skyrim_animation(str(extract(key.replace('\\','/')))).blend_hint
 # Neutralize additive overlays instead of applying an absolute whole-body pose twice.
@@ -156,6 +187,8 @@ neutralFile=sdk('neutral-additive',neutral)
 OAR=Path(args.output or R/'dist')/'meshes/actors/character/animations/OpenAnimationReplacer/NPCMounts';OAR.mkdir(parents=True,exist_ok=True)
 (OAR/'config.json').write_text(json.dumps(dict(name='NPCMounts',author='npc-mounts',description='Per-reference humanoid horse mode'),indent=2))
 form=lambda n:dict(pluginName='NPCMounts.esp',formID=f'{n:X}')
+def is_additive(prefix,filename):
+ return aliasBindings.get(prefix+filename,aliasBindings.get(filename,aliasBindings.get('female/'+filename,0)))==1
 for rank,(name,_) in sources.items():
  folder=OAR/f'{rank:02d}-{name}';folder.mkdir(exist_ok=True)
  cfg=dict(name=name,priority=2147483630+rank,interruptible=True,hasCustomBlendTimeOnInterrupt=True,blendTimeOnInterrupt=0.12,conditions=[dict(condition='FactionRank',requiredVersion='1.0.0',Faction=form(0x800),Comparison='==',**{'Numeric value':{'value':rank}})])
@@ -163,12 +196,12 @@ for rank,(name,_) in sources.items():
  for filename in aliases:
   for prefix in ['', 'female/']:
    target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
-   target.write_bytes((neutralFile if aliasBindings.get(prefix+filename)==1 else clips[rank]).read_bytes())
+   target.write_bytes((neutralFile if is_additive(prefix,filename) else clips[rank]).read_bytes())
 folder=OAR/'rider';folder.mkdir(exist_ok=True)
 (folder/'config.json').write_text(json.dumps(dict(name='rider',priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
 for filename in aliases:
  for prefix in ['', 'female/']:
   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
-  target.write_bytes((neutralFile if aliasBindings.get(prefix+filename)==1 else riderJumps.get(filename,riderFile)).read_bytes())
-(R/'reports/animations.json').write_text(json.dumps(dict(mapping=mapping,clips=reports,aliases=sorted(aliases),additiveOverlaysNeutralized=[k for k,v in aliasBindings.items() if v==1],riderJumpAnnotationsPreserved=True,bakedRiderSeat=seat.tolist(),humanIdleCameraPreserved=True,gameTested=False),indent=2))
+  target.write_bytes((neutralFile if is_additive(prefix,filename) else riderJumps.get(filename,riderFile)).read_bytes())
+(R/'reports/animations.json').write_text(json.dumps(dict(mapping=mapping,sourceMode='human-crawl' if args.crawl_dir else 'horse-retarget',crawlSources=crawlFiles if args.crawl_dir else None,stableBackAnchor=bp[S.bones.index('NPC Spine2 [Spn2]')].tolist(),clips=reports,aliases=sorted(aliases),additiveOverlaysNeutralized=[k for k,v in aliasBindings.items() if v==1],riderJumpAnnotationsPreserved=True,bakedRiderSeat=seat.tolist(),humanIdleCameraPreserved=True,gameTested=False),indent=2))
 print('Built',len(reports),'validated clips and',len(aliases)*22,'scoped animation aliases')

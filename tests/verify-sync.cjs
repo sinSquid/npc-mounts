@@ -14,6 +14,9 @@ const code=`
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <numbers>
+#include "../src/Config.h"
+Settings::Data config;
 namespace RE {
 struct NiPoint3 {float x{},y{},z{};bool operator==(const NiPoint3&)const=default;};
 struct hkVector4 {};
@@ -28,7 +31,7 @@ struct Actor {
  NiPoint3 position;Controller controller;float angle{};unsigned writes{};
  auto* GetCharController(){return &controller;}
  auto GetPosition(){return position;}auto GetAngleZ(){return angle;}
- void SetHeading(float value){angle=value;}
+ void SetAngle(NiPoint3 value){angle=value.z;}
  void SetPosition(NiPoint3 value,bool update){position=value;++writes;if(update)controller.position=value;}
  void EngineUpdate(){position=controller.position;}
 };

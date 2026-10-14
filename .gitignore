@@ -2,3 +2,5 @@
 /dist/
 /reports/
 *.sseviewsettings
+# Locally reused third-party game models; redistribution rights not established.
+/assets/meshes/
