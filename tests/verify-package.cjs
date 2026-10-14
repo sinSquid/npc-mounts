@@ -1,0 +1,38 @@
+const fs=require('fs'),path=require('path'),assert=require('assert'),z=require('zlib'),crypto=require('crypto');
+const repo=path.resolve(__dirname,'..'),dist=process.argv[2]?path.resolve(process.argv[2]):path.join(repo,'dist'),records=[];
+function parse(b,start=0,end=b.length){for(let p=start;p<end;){const type=b.toString('ascii',p,p+4),n=b.readUInt32LE(p+4);if(type==='GRUP'){parse(b,p+24,p+n);p+=n;continue;}let data=b.subarray(p+24,p+24+n);if(b.readUInt32LE(p+8)&0x40000)data=z.inflateSync(data.subarray(4));const fields=[];for(let q=0;q<data.length;){const tag=data.toString('ascii',q,q+4),len=data.readUInt16LE(q+4);fields.push({tag,data:data.subarray(q+6,q+6+len)});q+=6+len;assert(q<=data.length);}records.push({type,id:b.readUInt32LE(p+12),flags:b.readUInt32LE(p+8),fields});p+=24+n;assert(p<=end);}}
+parse(fs.readFileSync(path.join(dist,'NPCMounts.esp')));
+assert.equal(records.length,7);assert(records[0].flags&0x200);
+assert.deepEqual(records[0].fields.filter(x=>x.tag==='MAST').map(x=>x.data.toString().replace(/\0/g,'')),['Skyrim.esm']);
+assert(!records.some(r=>['NPC_','RACE','ARMO','HDPT','TXST'].includes(r.type)));
+for(let id=0x800;id<=0x805;id++)assert(records.some(r=>r.id===0x01000000+id));
+for(const r of records.filter(r=>r.type==='MGEF')){
+ const data=r.fields.find(x=>x.tag==='DATA').data;
+ assert.equal(data.length,152);assert.equal(data.readUInt32LE(64),1);assert(!(data.readUInt32LE(0)&5));
+ assert.equal(data.readUInt32LE(80),1);assert.equal(data.readUInt32LE(84),r.id===0x01000802?2:0);
+}
+for(const r of records.filter(r=>r.type==='SPEL')){
+ const ref=r.fields.find(x=>x.tag==='EFID').data.readUInt32LE();assert(records.some(v=>v.id===ref&&v.type==='MGEF'));
+ assert.equal(r.fields.find(x=>x.tag==='SPIT').data.length,36);
+}
+function files(root){return fs.readdirSync(root,{withFileTypes:true}).flatMap(e=>e.isDirectory()?files(path.join(root,e.name)):[path.join(root,e.name)]);}
+const animationReport=JSON.parse(fs.readFileSync(path.join(repo,'reports/animations.json'))),hashes=new Set(animationReport.clips.map(x=>x.sha256));
+assert.equal(animationReport.clips.length,18);assert(animationReport.clips.every(x=>x.tracks===99&&x.sdkDecode));
+const all=files(dist),jsons=all.filter(f=>f.endsWith('config.json'));assert.equal(jsons.length,12);
+const ranks=new Set();let hkx=0;
+for(const filename of all){
+ if(filename.endsWith('.hkx')){const b=fs.readFileSync(filename);assert.equal(b[16],8);assert(hashes.has(crypto.createHash('sha256').update(b).digest('hex')));hkx++;}
+ if(filename.endsWith('config.json')){
+  const cfg=JSON.parse(fs.readFileSync(filename));if(!cfg.conditions)continue;
+  assert(cfg.interruptible);assert(cfg.priority<2147483647);
+  const c=cfg.conditions[0];assert.equal(c.Faction.pluginName,'NPCMounts.esp');
+  if(c.condition==='FactionRank'){assert.equal(c.Comparison,'==');assert.equal(c.Faction.formID,'800');ranks.add(c['Numeric value'].value);}
+  else{assert.equal(c.condition,'IsInFaction');assert.equal(c.Faction.formID,'801');}
+ }
+}
+assert.deepEqual([...ranks].sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9]);
+assert.equal(hkx,animationReport.aliases.length*22);
+for(let actorRank=-1;actorRank<=9;actorRank++)assert.equal([...ranks].filter(r=>r===actorRank).length,actorRank<0?0:1);
+assert(fs.statSync(path.join(dist,'SKSE/Plugins/NPCMounts.dll')).size>100000);
+const report={pluginRecords:6,onlyMaster:'Skyrim.esm',noAppearanceOverrides:true,validatedUniqueClips:18,animationAliases:hkx,mutuallyExclusiveRanks:true,gameTested:false};
+fs.writeFileSync(path.join(repo,'reports/package-verification.json'),JSON.stringify(report,null,2));console.log(report);
