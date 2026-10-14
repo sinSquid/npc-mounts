@@ -83,6 +83,7 @@ RE::Actor* Crosshair()
 }
 void HoldPose(RE::Actor* actor)
 {
+    if(Extras::HoldAnchor(actor))return;
     if(Extras::Leashed(actor)){
         if(!actor->IsAIEnabled())actor->EnableAI(true);
         if(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained)actor->SetLifeState(RE::ACTOR_LIFE_STATE::kAlive);
@@ -292,7 +293,7 @@ void Mount(RE::Actor* actor)
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto* cc = player->GetCharController();
     if (!cc || player->IsOnMount() || player->IsDead()) return;
-    if(!Seat::Bind(player)){RE::SendHUDMessage::ShowHUDMessage("骑手动画骨架或座位资源不兼容，未开始骑乘");return;}
+    if(!Seat::Bind(player)){RE::SendHUDMessage::ShowHUDMessage(Seat::BindError());return;}
     ridden = actor->GetHandle();
     mountControllerFlags = actor->GetCharController()->flags.underlying() & static_cast<std::uint32_t>(proxyPhysics);
     playerControllerFlags = cc->flags.underlying() & static_cast<std::uint32_t>(ridePhysics);
@@ -699,7 +700,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESObjectLoadedEvent>(&events);
         source->AddEventSink<RE::TESFormDeleteEvent>(&events);
         RegisterRideInput();
-        spdlog::info("Ready 0.3.1: bounded leash lifecycle, load reconciliation and complete local restore");
+        spdlog::info("Ready 0.3.2: extended rider skeletons and teleport-safe soft anchors");
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
         if(message->type==SKSE::MessagingInterface::kPostLoadGame&&!message->data)return;

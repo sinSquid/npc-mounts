@@ -46,7 +46,7 @@ struct Actor { bool enabled{true}; int aiCalls{}, lifeCalls{};
   unsigned GetFormID() { return 1; }
 };
 }
-namespace Extras {bool leashed=false;bool Leashed(RE::Actor*){return leashed;}}
+namespace Extras {bool leashed=false,anchored=false;bool Leashed(RE::Actor*){return leashed;}bool HoldAnchor(RE::Actor*){return anchored;}}
 constexpr unsigned ownedFlags=(1u<<27)|(1u<<20)|(1u<<21)|(1u<<29);
 struct { struct State { unsigned originalFlags{}; } state; State& at(unsigned) { return state; } } targets;
 ${body('HoldPose')}
@@ -59,7 +59,7 @@ int main() {
   assert(!(actor.data.boolFlags.value & (1u<<29)));
   targets.state.originalFlags=1u<<29; HoldPose(&actor);
   assert(actor.data.boolFlags.value & (1u<<29)); targets.state.originalFlags=0;
-  RE::Actor frozen; frozen.enabled=false; HoldPose(&frozen);
+  RE::Actor frozen; frozen.enabled=false;Extras::anchored=true;HoldPose(&frozen);assert(frozen.aiCalls==0);Extras::anchored=false; HoldPose(&frozen);
   assert(frozen.enabled && frozen.aiCalls==1);
   HoldPose(&frozen); assert(frozen.aiCalls==1 && frozen.lifeCalls==1);
   RE::Actor alreadyRestrained; alreadyRestrained.life=RE::ACTOR_LIFE_STATE::kRestrained;

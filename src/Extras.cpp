@@ -14,6 +14,7 @@ struct Binding {
     RE::FormID post=0,cell=0,oldHands=0;
     std::uint32_t flags=0,life=0,priorCuffs=0;
     bool ai=true,pacified=false,releaseRequested=false;
+    bool teammate=false,teammateSaved=false;
     RE::NiPoint3 position,angle;
 };
 enum class Phase {Checking,Applying,Reconciling,Active,Stopping,Failed};
@@ -28,44 +29,32 @@ std::unordered_map<RE::FormID,Tether> tethers; // Main-thread tasks only.
 std::uint64_t serial=0;
 std::atomic_uint64_t session{0};
 std::atomic_uint64_t leashEventsSeen{0};
-float poll=0,anchorPoll=0;
+float poll=0;
 bool hooksReady=false,leashAvailable=false;
 RE::TESObjectSTAT* postBase{};RE::TESObjectARMO* cuffs{};
 std::array<RE::EffectSetting*,4> effects{};
-using Move=void(*)(RE::TESObjectREFR*,const RE::ObjectRefHandle&,RE::TESObjectCELL*,RE::TESWorldSpace*,const RE::NiPoint3&,const RE::NiPoint3&);
-using Position=void(*)(RE::Actor*,const RE::NiPoint3&,bool);
 using Hostile=bool(*)(RE::Actor*,RE::Actor*);
 using Combat=bool(*)(RE::Actor*,RE::Actor*,RE::CombatGroup*);
-Move originalMove{};Position originalPosition{};Hostile originalHostile{};Combat originalCombat{};
+Hostile originalHostile{};Combat originalCombat{};
 
 void Notify(const char* text){RE::SendHUDMessage::ShowHUDMessage(text);}
 bool Find(RE::FormID id,Binding& out){std::scoped_lock lock(mutex);auto it=bindings.find(id);if(it==bindings.end())return false;out=it->second;return true;}
 bool Pacified(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b)&&b.pacified;}
-void MoveHook(RE::TESObjectREFR* actor,const RE::ObjectRefHandle& handle,RE::TESObjectCELL* cell,RE::TESWorldSpace* world,const RE::NiPoint3& pos,const RE::NiPoint3& angle){
-    Binding b;if(actor&&Find(actor->GetFormID(),b)&&!b.pacified)return;
-    originalMove(actor,handle,cell,world,pos,angle);
-}
-void PositionHook(RE::Actor* actor,const RE::NiPoint3& pos,bool update){
-    Binding b;if(Find(actor->GetFormID(),b)&&!b.pacified){originalPosition(actor,b.position,update);return;}
-    originalPosition(actor,pos,update);
+bool Displaced(RE::Actor* actor,const Binding& b){
+    auto* cell=actor->GetParentCell();
+    if(!cell)return true;
+    const auto delta=actor->GetPosition()-b.position;
+    return cell->GetFormID()!=b.cell||delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>32.f*32.f;
 }
 bool HostileHook(RE::Actor* self,RE::Actor* target){return Pacified(self)||Pacified(target)?false:originalHostile(self,target);}
 bool CombatHook(RE::Actor* self,RE::Actor* target,RE::CombatGroup* group){return Pacified(self)||Pacified(target)?false:originalCombat(self,target,group);}
-void Freeze(RE::Actor* actor,const Binding& b,bool repairCell=true){
-    if(b.pacified)return;
-    // MoveTo can synchronously update the actor. Do not re-enter relocation.
-    static thread_local bool updating=false;if(updating)return;
-    struct Guard{bool& value;Guard(bool& v):value(v){value=true;}~Guard(){value=false;}} guard(updating);
-    if(auto* cell=RE::TESForm::LookupByID<RE::TESObjectCELL>(b.cell);cell&&actor->GetParentCell()!=cell){
-        if(!repairCell)return;
-        RE::ObjectRefHandle empty;originalMove(actor,empty,cell,cell->GetRuntimeData().worldSpace,b.position,b.angle);
-        if(actor->GetParentCell()!=cell)return;
-    }
-    if(actor->Get3D()){
-        if(actor->GetPosition()!=b.position)originalPosition(actor,b.position,true);
-        if(actor->GetAngle()!=b.angle)actor->SetAngle(b.angle);
-        if(auto* cc=actor->GetCharController())cc->SetLinearVelocityImpl(RE::hkVector4());
-    }
+void Freeze(RE::Actor* actor,const Binding& b){
+    if(b.pacified||b.releaseRequested||Displaced(actor,b))return;
+    // Never relocate across cells or rewrite a loader's SetPosition call.
+    // A queued character may still hold the old cell's loading state.
+    auto* cell=actor->GetParentCell();
+    if(!cell||cell->GetFormID()!=b.cell||!cell->IsAttached()||!actor->Get3D())return;
+    if(auto* cc=actor->GetCharController())cc->SetLinearVelocityImpl(RE::hkVector4());
 }
 bool Eligible(RE::Actor* actor){
     return actor&&!actor->IsPlayerRef()&&!actor->IsDead()&&!Mounts::Restoring(actor)&&actor->GetParentCell()&&actor->Get3D()&&actor->Get3D()->GetObjectByName("NPC Spine2 [Spn2]")&&
@@ -82,6 +71,7 @@ bool Bind(RE::Actor* actor,bool pacify){
     if(life!=RE::ACTOR_LIFE_STATE::kAlive&&life!=RE::ACTOR_LIFE_STATE::kRestrained)return false;
     Binding b;b.cell=actor->GetParentCell()->GetFormID();b.position=actor->GetPosition();b.angle=actor->GetAngle();b.pacified=pacify;
     b.flags=actor->GetActorRuntimeData().boolFlags.underlying()&static_cast<std::uint32_t>(flagsMask);b.life=static_cast<unsigned>(life);b.ai=actor->IsAIEnabled();
+    b.teammate=actor->IsPlayerTeammate();b.teammateSaved=!pacify;
     if(auto* old=actor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands))b.oldHands=old->GetFormID();
     const auto counts=actor->GetInventoryCounts([&](RE::TESBoundObject& object){return &object==cuffs;});
     if(auto it=counts.find(cuffs);it!=counts.end())b.priorCuffs=std::max(0,it->second);
@@ -96,6 +86,8 @@ bool Bind(RE::Actor* actor,bool pacify){
     actor->StopCombat();actor->EnableAI(true);actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);actor->GetActorRuntimeData().boolFlags.set(flagsMask);
     actor->NotifyAnimationGraph("SprintStop");actor->NotifyAnimationGraph("moveStop");
     if(pacify&&!Mounts::Converted(actor))actor->NotifyAnimationGraph("IdleBoundStandingStart");
+    if(!pacify)HoldAnchor(actor);
+    spdlog::info("Bound ref={:08X} type={} cell={:08X} teammate={}",actor->GetFormID(),pacify?"D":"C",b.cell,b.teammate);
     Notify(pacify?"目标已束缚并停止敌对；B可解除":"坐骑已固定在此处；B可解除");return true;
 }
 
@@ -172,6 +164,15 @@ struct LeashEvents final:RE::BSTEventSink<SKSE::ModCallbackEvent>{
 } leashEvents;
 }
 bool Bound(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b);}
+bool HoldAnchor(RE::Actor* actor){
+    if(!actor)return false;
+    {std::scoped_lock lock(mutex);auto it=bindings.find(actor->GetFormID());if(it==bindings.end()||it->second.pacified)return false;
+        if(it->second.releaseRequested||Displaced(actor,it->second))return true;
+        if(!it->second.teammateSaved){it->second.teammate=actor->IsPlayerTeammate();it->second.teammateSaved=true;}}
+    if(actor->IsAIEnabled())actor->EnableAI(false);
+    actor->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
+    return true;
+}
 bool Leashed(RE::Actor* actor){if(!actor)return false;auto it=tethers.find(actor->GetFormID());return it!=tethers.end()&&it->second.phase==Phase::Active&&it->second.wanted;}
 bool Busy(RE::Actor* actor){return actor&&tethers.contains(actor->GetFormID());}
 bool Release(RE::Actor* actor){
@@ -185,6 +186,7 @@ bool Release(RE::Actor* actor){
         if(auto* old=RE::TESForm::LookupByID<RE::TESObjectARMO>(b.oldHands))equip->EquipObject(actor,old,nullptr,1,nullptr,false,false,false,true);
     }
     DeletePost(b.post);auto& flags=actor->GetActorRuntimeData().boolFlags;flags.reset(flagsMask);flags.set(static_cast<RE::Actor::BOOL_FLAGS>(b.flags));
+    if(b.teammateSaved){auto& bits=actor->GetActorRuntimeData().boolBits;bits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);if(b.teammate)bits.set(RE::Actor::BOOL_BITS::kPlayerTeammate);}
     if(!actor->IsDead()&&actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained)actor->SetLifeState(static_cast<RE::ACTOR_LIFE_STATE>(b.life));
     actor->EnableAI(b.ai);
     if(!actor->IsDead()){actor->NotifyAnimationGraph("IdleForceDefaultState");if(b.ai)actor->EvaluatePackage(false,false);}return true;
@@ -194,7 +196,7 @@ void ReleaseAll(){
     for(auto& [id,t]:tethers){t.wanted=false;if(std::find(ids.begin(),ids.end(),id)==ids.end())ids.push_back(id);}
     for(auto id:ids)if(auto* actor=RE::TESForm::LookupByID<RE::Actor>(id))Release(actor);
 }
-void AfterActorUpdate(RE::Actor* actor){Binding b;if(hooksReady&&Find(actor->GetFormID(),b)&&!actor->IsDead())Freeze(actor,b,false);}
+void AfterActorUpdate(RE::Actor* actor){Binding b;if(hooksReady&&Find(actor->GetFormID(),b)&&!actor->IsDead())Freeze(actor,b);}
 void CheckTether(RE::Actor* actor){
     const auto id=actor->GetFormID();auto& tether=tethers.at(id);
     if(tether.phase!=Phase::Active&&tether.phase!=Phase::Reconciling)return;
@@ -218,13 +220,23 @@ void AdvanceTethers(float delta){
     }
 }
 void Tick(float delta){
-    AdvanceTethers(delta);anchorPoll-=delta;const bool repairCell=anchorPoll<=0;if(repairCell)anchorPoll=1.f;
+    AdvanceTethers(delta);
     std::vector<std::pair<RE::FormID,Binding>> work;{std::scoped_lock lock(mutex);for(const auto& item:bindings)work.push_back(item);}
     for(const auto& [id,b]:work)if(auto* actor=RE::TESForm::LookupByID<RE::Actor>(id)){
         if(actor->IsDead()||b.releaseRequested){Release(actor);continue;}
+        if(!b.pacified){
+            auto* cell=actor->GetParentCell();
+            if(Displaced(actor,b)){
+                if(cell&&cell->IsAttached()&&actor->Get3D()){
+                    spdlog::warn("Anchor bypassed ref={:08X} oldCell={:08X} newCell={:08X}; releasing without cross-cell MoveTo",id,b.cell,cell->GetFormID());
+                    Release(actor);Notify("其他移动绕过固定，已安全解除固定；未强制传回旧地点");
+                }continue;
+            }
+            HoldAnchor(actor);
+        }
         actor->GetActorRuntimeData().boolFlags.set(flagsMask);
         if(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kAlive)actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);
-        Freeze(actor,b,repairCell);
+        Freeze(actor,b);
         if(b.pacified&&actor->IsInCombat())actor->StopCombat();
     }
     poll-=delta;if(poll>0)return;poll=1.f;
@@ -254,42 +266,45 @@ void Initialize(){
     const auto status=MH_Initialize();if(status!=MH_OK&&status!=MH_ERROR_ALREADY_INITIALIZED){spdlog::error("Restraint hook init failed {}",int(status));return;}
     struct Hook{void* address;void* replacement;void** original;};
     const std::array hooks{
-        Hook{reinterpret_cast<void*>(REL::RelocationID(56227,56626).address()),reinterpret_cast<void*>(MoveHook),reinterpret_cast<void**>(&originalMove)},
         Hook{reinterpret_cast<void*>(REL::RelocationID(36537,37537).address()),reinterpret_cast<void*>(HostileHook),reinterpret_cast<void**>(&originalHostile)},
         Hook{reinterpret_cast<void*>(REL::RelocationID(37608,38561).address()),reinterpret_cast<void*>(CombatHook),reinterpret_cast<void**>(&originalCombat)}};
     for(const auto& h:hooks){const auto result=MH_CreateHook(h.address,h.replacement,h.original);if(result!=MH_OK){spdlog::error("Restraint detour failed {}",int(result));return;}MH_QueueEnableHook(h.address);}
     if(MH_ApplyQueued()!=MH_OK){spdlog::error("Restraint detour activation failed");return;}
-    REL::Relocation<std::uintptr_t> npc{RE::VTABLE_Character[0]};originalPosition=reinterpret_cast<Position>(npc.write_vfunc(0xA9,PositionHook));hooksReady=true;
+    hooksReady=true; // Do not hook SetPosition: cell loading must keep its own coordinate transaction intact.
     spdlog::info("C/D restraint hooks ready; E/F LeashFramework available={}",leashAvailable);
 }
 void Save(SKSE::SerializationInterface* save){
-    {std::scoped_lock lock(mutex);save->OpenRecord('BIND',1);save->WriteRecordData(static_cast<std::uint32_t>(bindings.size()));
-    for(const auto& [id,b]:bindings){for(auto v:{id,b.post,b.cell,b.flags,b.life,std::uint32_t(b.ai),b.oldHands,b.priorCuffs,std::uint32_t(b.pacified),std::uint32_t(b.releaseRequested)})save->WriteRecordData(v);
+    {std::scoped_lock lock(mutex);save->OpenRecord('BIND',2);save->WriteRecordData(static_cast<std::uint32_t>(bindings.size()));
+    for(const auto& [id,b]:bindings){for(auto v:{id,b.post,b.cell,b.flags,b.life,std::uint32_t(b.ai),b.oldHands,b.priorCuffs,std::uint32_t(b.pacified),std::uint32_t(b.releaseRequested),std::uint32_t(b.teammate),std::uint32_t(b.teammateSaved)})save->WriteRecordData(v);
         for(float v:{b.position.x,b.position.y,b.position.z,b.angle.x,b.angle.y,b.angle.z})save->WriteRecordData(v);}}
     // A preflight check has not created anything: never claim an unrelated rope on load.
     save->OpenRecord('TETH',1);save->WriteRecordData(static_cast<std::uint32_t>(std::count_if(tethers.begin(),tethers.end(),[](const auto& pair){return pair.second.phase!=Phase::Checking;})));
     for(const auto& [id,t]:tethers)if(t.phase!=Phase::Checking){save->WriteRecordData(id);save->WriteRecordData(std::uint32_t(t.wanted));}
 }
 bool Load(SKSE::SerializationInterface* save,std::uint32_t type,std::uint32_t version,std::uint32_t length){
-    if(type!='BIND'&&type!='TETH')return false;if(version!=1||length<4)return true;
-    const auto stride=type=='BIND'?64u:8u;std::uint32_t count=0;if(save->ReadRecordData(&count,4)!=4||length!=4+std::uint64_t(count)*stride)return true;
+    if(type!='BIND'&&type!='TETH')return false;if((type=='BIND'?(version<1||version>2):version!=1)||length<4)return true;
+    const auto stride=type=='BIND'?(version==1?64u:72u):8u;std::uint32_t count=0;if(save->ReadRecordData(&count,4)!=4||length!=4+std::uint64_t(count)*stride)return true;
     for(unsigned i=0;i<count;++i){
         if(type=='TETH'){std::uint32_t id=0,wanted=0,resolved=0;if(save->ReadRecordData(&id,4)!=4||save->ReadRecordData(&wanted,4)!=4)break;if(save->ResolveFormID(id,resolved)){tethers[resolved]={Phase::Reconciling,wanted!=0,++serial};tethers[resolved].born=leashEventsSeen.load();}continue;}
-        std::array<std::uint32_t,10> values;std::array<float,6> coordinates;if(save->ReadRecordData(values.data(),40)!=40||save->ReadRecordData(coordinates.data(),24)!=24)break;
+        std::array<std::uint32_t,12> values{};std::array<float,6> coordinates;const auto valueBytes=version==1?40u:48u;
+        if(save->ReadRecordData(values.data(),valueBytes)!=valueBytes||save->ReadRecordData(coordinates.data(),24)!=24)break;
         if(!std::all_of(coordinates.begin(),coordinates.end(),[](float n){return std::isfinite(n);})||(values[4]!=0&&values[4]!=6))continue;
         RE::FormID id;if(!save->ResolveFormID(values[0],id))continue;
         Binding b;save->ResolveFormID(values[1],b.post);save->ResolveFormID(values[2],b.cell);save->ResolveFormID(values[6],b.oldHands);
         b.flags=values[3]&static_cast<unsigned>(flagsMask);b.life=values[4];b.ai=values[5]!=0;b.priorCuffs=values[7];b.pacified=values[8]!=0;b.releaseRequested=values[9]!=0||(!b.cell&&!b.pacified);
+        b.teammate=values[10]!=0;b.teammateSaved=values[11]!=0;
         b.position={coordinates[0],coordinates[1],coordinates[2]};b.angle={coordinates[3],coordinates[4],coordinates[5]};std::scoped_lock lock(mutex);bindings[id]=b;
     }return true;
 }
-void Revert(){std::scoped_lock lock(mutex);++session;bindings.clear();tethers.clear();++serial;poll=anchorPoll=0;}
+void Revert(){std::scoped_lock lock(mutex);++session;bindings.clear();tethers.clear();++serial;poll=0;}
 std::uint64_t Session(){return session.load();}
 void Deleted(RE::FormID id){Binding b;if(Find(id,b)){{std::scoped_lock lock(mutex);bindings.erase(id);}DeletePost(b.post);}tethers.erase(id);}
 void Loaded(RE::Actor* actor){
     Binding b;if(!actor||!Find(actor->GetFormID(),b))return;
     if(!hooksReady||actor->IsDead()||b.releaseRequested){Release(actor);return;}
+    if(!b.pacified&&Displaced(actor,b))return; // Tick releases after the destination is attached.
     actor->EnableAI(true);actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);actor->GetActorRuntimeData().boolFlags.set(flagsMask);Freeze(actor,b);
+    if(!b.pacified)HoldAnchor(actor);
     if(b.pacified&&!Mounts::Converted(actor)&&actor->Get3D())actor->NotifyAnimationGraph("IdleBoundStandingStart");
 }
 void PostLoad(){

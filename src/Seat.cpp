@@ -13,7 +13,9 @@ std::array<std::array<Pose,bones>,frames> animation;
 std::array<std::array<char,64>,bones> names;
 std::array<std::int16_t,bones> parents;
 std::mutex mutex;
-std::vector<RE::BSTSmartPointer<RE::BShkbAnimationGraph>> graphs;
+struct GraphBinding {RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count;};
+std::vector<GraphBinding> graphs;
+const char* bindError="座位资源未加载，请查看NPCMounts日志";
 RE::NiPoint3 target;
 float progress=-1.f;
 bool active=false, loaded=false;
@@ -62,23 +64,26 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     // Serialize output with Clear(): an in-flight job must not publish another
     // riding pose after dismount cleanup has returned.
     std::scoped_lock lock(mutex);
-    if(!active || std::none_of(graphs.begin(),graphs.end(),[&](const auto& g){return &g->characterInstance==context.character;}))return;
+    if(!active)return;
+    const auto binding=std::find_if(graphs.begin(),graphs.end(),[&](const auto& g){return &g.graph->characterInstance==context.character;});
+    if(binding==graphs.end())return;
     const auto desired=target;const float phase=progress;
     if(!output.tracks)return;
     const auto& header=output.tracks->masterHeader;
     if(header.numTracks<3 || header.numTracks>128 || header.numBytes<16+header.numTracks*16)return;
     const auto& track=output.tracks->trackHeaders[2];
     const int bytes=bones*sizeof(Pose),begin=16+header.numTracks*16;
-    if(track.numData!=bones || track.capacity<bones || track.elementSizeBytes!=sizeof(Pose) ||
+    if(track.numData<bones || track.numData>binding->count || track.capacity<track.numData || track.elementSizeBytes!=sizeof(Pose) ||
         static_cast<int>(track.flags)!=0 || static_cast<int>(track.type)!=1 || track.onFraction<=0 ||
-        track.dataOffset<begin || track.dataOffset>header.numBytes || bytes>header.numBytes-track.dataOffset)return;
+        track.dataOffset<begin || track.dataOffset>header.numBytes || track.numData*sizeof(Pose)>header.numBytes-track.dataOffset)return;
     auto* outputPose=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
     std::array<Pose,bones> pose;std::memcpy(pose.data(),outputPose,bytes);
     if(phase>=0)Sample(phase,pose.data());
     std::array<RE::NiPoint3,bones> positions;std::array<RE::NiMatrix3,bones> basis;
     World(pose.data(),positions,basis);
     // Only local animation output is changed, before skeleton/SMP publication.
-    // Pelvis=5, COM=4 are verified by the complete skeleton binding in Bind().
+    // Pelvis=5, COM=4 and the 99-bone prefix are verified in Bind().
+    // Extended XPMSSE tracks are never overwritten, including during dismount.
     RE::NiMatrix3 inverse;
     if(!Inverse(basis[parents[4]],inverse))return;
     const auto correction=inverse*(desired-positions[5]);
@@ -106,20 +111,26 @@ bool Install(){
     original=reinterpret_cast<Generate>(graph.write_vfunc(0x17,GeneratePose));loaded=true;return true;
 }
 bool Bind(RE::Actor* player){
-    Clear();if(!loaded)return false;
+    Clear();if(!loaded){bindError="座位资源未加载，请查看NPCMounts日志";spdlog::warn("Seat bind: animation resource not loaded");return false;}
     RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;
-    if(!player->GetAnimationGraphManager(manager)||!manager)return false;
+    if(!player->GetAnimationGraphManager(manager)||!manager){bindError="玩家动画图尚未加载，请切换第三人称后重试";spdlog::warn("Seat bind: no animation graph manager");return false;}
+    bindError="玩家动画骨架的基础骨骼不兼容，详见NPCMounts日志";
     std::scoped_lock lock(mutex);
     for(auto& graph:manager->graphs){
         if(!graph||!graph->characterInstance.setup)continue;
         auto skeleton=graph->characterInstance.setup->animationSkeleton;
-        if(!skeleton||skeleton->bones.size()!=bones||skeleton->parentIndices.size()!=bones)continue;
+        if(!skeleton||skeleton->bones.size()<bones||skeleton->parentIndices.size()!=skeleton->bones.size()){
+            spdlog::warn("Seat bind rejected: bones={} parents={}",skeleton?skeleton->bones.size():0,skeleton?skeleton->parentIndices.size():0);continue;
+        }
         bool match=true;for(unsigned i=0;i<bones;++i)
-            if(!skeleton->bones[i].name.c_str()||std::strcmp(skeleton->bones[i].name.c_str(),names[i].data())||skeleton->parentIndices[i]!=parents[i]){match=false;break;}
-        if(match)graphs.push_back(graph);
+            if(!skeleton->bones[i].name.c_str()||std::strcmp(skeleton->bones[i].name.c_str(),names[i].data())||skeleton->parentIndices[i]!=parents[i]){
+                spdlog::warn("Seat bind rejected: index={} actual={} expected={} parent={}/{}",i,skeleton->bones[i].name.c_str()?skeleton->bones[i].name.c_str():"<null>",names[i].data(),skeleton->parentIndices[i],parents[i]);match=false;break;
+            }
+        if(match){graphs.push_back({graph,static_cast<unsigned>(skeleton->bones.size())});spdlog::info("Seat bind accepted: {} bones, compatible {}-bone prefix",skeleton->bones.size(),bones);}
     }
     return !graphs.empty();
 }
+const char* BindError(){return bindError;}
 void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();wrote=false;finished=false;progress=-1.f;}
 bool Working(){return wrote.load(std::memory_order_relaxed);}
 bool Finished(){return finished.load(std::memory_order_acquire);}
