@@ -15,4 +15,6 @@ Copy-Item -LiteralPath (Join-Path $taskRepo 'build\Release\NPCMounts.dll') -Dest
 Copy-Item -LiteralPath (Join-Path $taskRepo 'config\NPCMounts.ini') -Destination $taskPlugins
 & $Python (Join-Path $PSScriptRoot 'build-seat-motion.py') --codec $Codec --output (Join-Path $taskRepo 'dist')
 if($LASTEXITCODE){throw 'Dismount motion build failed; generate base animations first'}
+& $Python (Join-Path $PSScriptRoot 'build-crawl-motion.py') --codec $Codec --output (Join-Path $taskRepo 'dist')
+if($LASTEXITCODE){throw 'Crawl motion build failed; generate base animations first'}
 Write-Output 'Built to dist. This script never modifies MO2 or the game.'

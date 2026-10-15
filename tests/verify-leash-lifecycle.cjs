@@ -15,10 +15,15 @@ fs.writeFileSync(path.join(root,'build/leash-lifecycle-regression.cpp'),`
 #include <cstdint>
 #include <atomic>
 #include <algorithm>
-namespace RE {using FormID=unsigned;struct Actor;
-struct Ref {Actor* p;Actor* get(){return p;}explicit operator bool()const{return p;}};
+#include <type_traits>
+namespace RE {using FormID=unsigned;struct Actor;inline Actor* known=nullptr;
+struct Ref {Actor* p;Actor* get(){return p;}Actor* operator->(){return p;}explicit operator bool()const{return p;}};
 struct Handle {Actor* p;Ref get()const{return {p};}};
-struct Actor {unsigned id=1;bool converted=true,bound=false,riding=false;unsigned GetFormID(){return id;}Handle GetHandle(){return {this};}template<class T>T* As(){return static_cast<T*>(this);}};
+struct NiPoint3 {float x,y,z;NiPoint3 operator+(NiPoint3 b){return{x+b.x,y+b.y,z+b.z};}};
+struct Cell{};inline Cell cell;
+struct TESObjectREFR {Cell* GetParentCell(){return &cell;}NiPoint3 GetPosition(){return{80,0,0};}};inline TESObjectREFR post;
+struct TESForm {template<class T>static T* LookupByID(unsigned id){if constexpr(std::is_same_v<T,TESObjectREFR>)return id==9?&post:nullptr;else return id==1?known:nullptr;}};
+struct Actor {unsigned id=1;bool converted=true,bound=false,riding=false;Cell* GetParentCell(){return &cell;}unsigned GetFormID(){return id;}Handle GetHandle(){return {this};}template<class T>T* As(){return static_cast<T*>(this);}};
 struct PlayerCharacter:Actor {static PlayerCharacter* GetSingleton(){static PlayerCharacter p;return &p;}};
 }
 namespace Mounts {bool Converted(RE::Actor* a){return a&&a->converted;}bool Riding(RE::Actor* a){return a->riding;}}
@@ -28,10 +33,14 @@ std::unordered_map<RE::FormID,Tether> tethers;std::uint64_t serial=0;bool leashA
 std::atomic_uint64_t leashEventsSeen{0},session{1};
 struct Pending {std::string name;std::function<void(bool)> callback;};std::deque<Pending> queue;
 void Notify(const char*){}bool Eligible(RE::Actor* a){return a!=nullptr;}bool Bound(RE::Actor* a){return a&&a->bound;}
+struct Binding{unsigned post=9;};bool Find(unsigned,Binding&){return true;}
+bool Release(RE::Actor* a){a->bound=false;return true;}
+unsigned anchorCalls=0;bool Bind(RE::Actor* a,bool pacify){assert(a&&!pacify);++anchorCalls;return true;}
+void StartTether(RE::Actor*,bool=false);
 ${take('bool Busy(')}
 ${take('bool Leashed(')}
 template<class... Args>bool Call(const char* name,std::function<void(bool)> fn,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn)});return true;}
-void Reply(const char* name,bool value){assert(!queue.empty()&&queue.front().name==name);auto fn=queue.front().callback;queue.pop_front();fn(value);}
+void Reply(const char* name,bool value){assert(!queue.empty()&&queue.front().name==name);auto fn=queue.front().callback;queue.pop_front();fn(value);if(std::string(name)=="SetRagdollOverride"){while(!queue.empty()&&(queue.front().name=="SetLeashFollower"||queue.front().name=="SetPreventOverstretchOverride")){auto next=queue.front().callback;queue.pop_front();next(true);}}}
 ${take('bool Current(')}
 ${take('void FailTether(')}
 ${take('void StopTether(')}
@@ -39,7 +48,11 @@ ${take('void StartTether(')}
 ${take('void CheckTether(')}
 ${take('void AdvanceTethers(')}
 ${take('void Unleashed(')}
-int main(){RE::Actor actor;
+int main(){RE::Actor actor;RE::known=&actor;
+ actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPosition",true);Reply("SetRagdollOverride",true);
+ assert(Busy(&actor)&&!Leashed(&actor)&&tethers.at(1).anchor);CheckTether(&actor);Reply("IsLeashed",true);StopTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ StartTether(&actor,true);Reply("IsLeashed",true);assert(!Busy(&actor)&&!actor.bound); // Foreign rope: rollback anchor, do not replace.
+ actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPosition",false);assert(!Busy(&actor)&&!actor.bound);
  leashAvailable=false;StartTether(&actor);assert(tethers.empty()&&queue.empty());leashAvailable=true;
  actor.bound=true;StartTether(&actor);assert(tethers.empty());actor.bound=false;
  actor.converted=false;StartTether(&actor);assert(tethers.empty());actor.converted=true;
@@ -91,6 +104,8 @@ int main(){RE::Actor actor;
   Reply("DisconnectLeash",i%4!=2);
   if(i%4==2){assert(Busy(&actor));AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",false);}
   assert(!Busy(&actor)&&queue.empty());}
- std::puts("PASS: actual E/F lifecycle and 1000 repeated cancellation/reconciliation cycles; invalid targets, timeout/retry bounds and stale callback isolation. Not VM/engine QA.");
+ StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",true);
+ tethers.at(1).anchorAfterDisconnect=true;StopTether(&actor);Reply("DisconnectLeash",true);assert(anchorCalls==1&&tethers.empty()&&queue.empty());
+ std::puts("PASS: actual tether lifecycle, player-to-post handoff, world-anchor creation/rollback and 1000 cancellation/reconciliation cycles; invalid targets, timeout/retry bounds and stale callbacks. Not VM/engine QA.");
 }
 `);

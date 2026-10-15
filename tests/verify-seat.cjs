@@ -41,7 +41,7 @@ std::array<std::array<Pose,bones>,frames> animation;
 std::array<std::array<char,64>,bones> names;std::array<std::int16_t,bones> parents;
 struct GraphBinding{std::shared_ptr<RE::BShkbAnimationGraph> graph;unsigned count;};
 std::mutex mutex;std::vector<GraphBinding> graphs;
-RE::NiPoint3 target;float progress=-1;bool active=true;std::atomic<bool>wrote=false,finished=false;
+RE::NiPoint3 target;float progress=-1;bool active=true,entering=false;std::atomic<bool>wrote=false,finished=false;
 void original(RE::hkbGenerator*,const RE::hkbContext&,const RE::hkbGeneratorOutput**,RE::hkbGeneratorOutput&,float){}
 ${extract('RE::NiMatrix3 Rotation(')}
 ${extract('void World(')}
@@ -89,6 +89,7 @@ int main(int argc,char** argv){
   pn.world.scale=std::numeric_limits<float>::quiet_NaN();Update(&player,&mount,cfg,-1,{});assert(!active);
  }
  active=true;
+ entering=true;for(float p:{1.f,.5f,0.f}){progress=p;finished=false;GeneratePose(nullptr,context,nullptr,output,0);assert(finished==(p==0));}entering=false;
  // Dense track shape/size and binding checks must reject before touching memory.
  for(int scenario=0;scenario<8;scenario++){
   tracks->masterHeader={bytes,3,{}};h={99,99,headerBytes,48,1,0,1,0};

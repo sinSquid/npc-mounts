@@ -11,7 +11,7 @@ const code=`
 #include <unordered_set>
 #include "../src/Config.h"
 #include "../src/RideControl.h"
-Settings::Data config;HoldGate dismountHold;bool downActive=false;
+Settings::Data config;HoldGate dismountHold;bool downActive=false,upActive=false;
 namespace RE {
 enum class INPUT_DEVICE {kKeyboard,kMouse,kGamepad};enum class BSEventNotifyControl{kContinue};
 template<class T>struct BSTEventSource{};
@@ -50,6 +50,7 @@ int main(){
  RE::ButtonEvent preHeldRelease("Sneak",29,true);head=&preHeldRelease;send(head);assert(head==&preHeldRelease);
  RE::ThumbstickEvent stick;head=&stick;send(head);assert(stick.yValue==0);
  config.allowBackward=true;stick.yValue=-1;head=&stick;send(head);assert(stick.yValue==-1);config.allowBackward=false;
+ config.allowBackward=true;RE::ButtonEvent altBack("Back",0x38);head=&altBack;send(head);assert(head==&altBack);config.allowBackward=false;
  config.blockSneak=false;RE::ButtonEvent allowedCtrl("Sneak",29);head=&allowedCtrl;send(head);assert(head==&allowedCtrl);config.blockSneak=true;
  downActive=true;stick.xValue=1;stick.yValue=1;head=&stick;send(head);assert(stick.xValue==0&&stick.yValue==0);downActive=false;
  RE::ButtonEvent attack("Left",1);attack.device=RE::INPUT_DEVICE::kMouse;

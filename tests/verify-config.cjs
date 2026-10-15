@@ -29,6 +29,7 @@ int main(){
  {std::ofstream f("build/config-invalid.ini");f<<"[Mounts]\\nNPCScale=nan\\nSpeedMultiplier=9\\nDismountHoldSeconds=-4\\nDismountKey=999999999999\\nAllowJump=garbage\\n";}
  loaded=Settings::Read("build/config-invalid.ini");assert(loaded.npcScale==1&&loaded.speedMultiplier==2&&loaded.holdSeconds==.25f&&loaded.dismountKey==255&&loaded.allowJump);
  assert(!Settings::Write("missing-config-dir/no.ini",cfg));
+ for(float v:{-1.f,.8f,.84f,.86f,1.24f,1.26f,2.f,9.f}){cfg.jumpHeightMultiplier=v;Settings::Normalize(cfg);assert(cfg.jumpHeightMultiplier>=.8f&&cfg.jumpHeightMultiplier<=2.f);assert(std::abs(cfg.jumpHeightMultiplier*10-std::round(cfg.jumpHeightMultiplier*10))<.0001f);assert(Settings::Write("build/config-roundtrip.ini",cfg));assert(Settings::Read("build/config-roundtrip.ini").jumpHeightMultiplier==cfg.jumpHeightMultiplier);}
  std::puts("PASS: actual INI read/write/limits, NaN/invalid values, strict hold threshold, release/reset and 30/60/144 FPS.");
 }
 `);

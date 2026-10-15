@@ -22,11 +22,13 @@ struct UserEvents{int activate=1;static UserEvents* GetSingleton(){static UserEv
 namespace SKSE{struct SerializationInterface{};struct Tasks{std::vector<std::function<void()>>queue;void AddTask(std::function<void()> fn){queue.push_back(fn);}void Run(){auto pending=std::move(queue);queue.clear();for(auto& fn:pending)fn();}}tasks;Tasks* GetTaskInterface(){return &tasks;}}
 namespace Extras{unsigned epoch=1;unsigned Session(){return epoch;}void Revert(){++epoch;}}
 namespace Seat{void Clear(){}}
+namespace MovementCompat{void End(){}}
+namespace Crawl{void Clear(){}}
 RE::Actor actor;RE::ActorHandle ridden;int mounts=0;bool converted=true;
 std::unordered_map<unsigned,int>targets;std::unordered_set<std::uint64_t>suppressedButtons;
-HoldGate dismountHold;bool downActive=false,loadedRideState=false,wasAir=false;float playerSpeedDelta=0,jumpTimer=0,landTimer=0,restoreRetry=0;int rideGait=0;
+HoldGate dismountHold;bool downActive=false,loadedRideState=false,wasAir=false,upActive=false;float playerSpeedDelta=0,jumpTimer=0,landTimer=0,restoreRetry=0;int rideGait=0;
 RE::Actor* Crosshair(){return &actor;}bool Converted(RE::Actor*){return converted;}
-bool originalActivate(RE::ActivateHandler*,RE::InputEvent*){return true;}void Mount(RE::Actor* a){++mounts;ridden=a->GetHandle();}
+bool nativeAccepted=true;bool originalActivate(RE::ActivateHandler*,RE::InputEvent*){return nativeAccepted;}void Mount(RE::Actor* a){++mounts;ridden=a->GetHandle();}
 ${take('bool ActivateInput(')}
 ${take('void Revert(')}
 int main(){RE::ActivateHandler handler;RE::InputEvent event;
@@ -36,6 +38,7 @@ int main(){RE::ActivateHandler handler;RE::InputEvent event;
  ActivateInput(&handler,&event);ridden=actor.GetHandle();SKSE::tasks.Run();assert(mounts==1);ridden.reset();
  converted=false;assert(ActivateInput(&handler,&event)&&SKSE::tasks.queue.empty());converted=true;
  for(int i=0;i<10000;++i){auto before=mounts;ActivateInput(&handler,&event);if(i%2==0)Revert(nullptr);SKSE::tasks.Run();assert(mounts==before+(i%2));ridden.reset();assert(SKSE::tasks.queue.empty());}
+ nativeAccepted=false;auto before=mounts;assert(!ActivateInput(&handler,&event));SKSE::tasks.Run();assert(mounts==before+1);ridden.reset();converted=false;assert(!ActivateInput(&handler,&event)&&SKSE::tasks.queue.empty());
  std::puts("PASS: actual activation defers mount, old-save tasks rejected after Revert, riding race avoided, suppressed keys and hold gate cleared.");
 }
 `);

@@ -19,6 +19,7 @@ struct Actor{Cell cell;bool loaded=true,dead=false;int mutations=0;void* Get3D()
 inline Actor actor;struct TESForm{template<class T>static T* LookupByID(unsigned id){return id==1?&actor:nullptr;}};
 }
 namespace Extras{unsigned epoch=1,loads=0;unsigned Session(){return epoch;}void Loaded(RE::Actor*){++loads;}}
+namespace Crawl{void Bind(RE::Actor*){}}
 namespace SKSE {struct Tasks{std::vector<std::function<void()>>queue;void AddTask(std::function<void()> fn){queue.push_back(fn);}void Run(){auto pending=std::move(queue);queue.clear();for(auto& fn:pending)fn();}};Tasks tasks;Tasks* GetTaskInterface(){return &tasks;}}
 struct State{bool restoreRequested=false;int animation=3;};std::unordered_map<unsigned,State>targets{{1,{}}};int mountFaction=0,restores=0;
 void Restore(RE::Actor*){++restores;targets.erase(1);}void HoldPose(RE::Actor* a){++a->mutations;}void StopMotion(RE::Actor* a){++a->mutations;}

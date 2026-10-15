@@ -40,6 +40,7 @@ struct Actor {
  std::vector<std::string> events;
  FormID GetFormID(){return id;} bool IsDead(){return dead;}
  void* GetCurrentScene(){return inScene?this:nullptr;}
+ bool IsInKillMove(){return inScene;}
  Actor* AsActorState(){return this;} auto GetLifeState(){return life;}
  void SetLifeState(ACTOR_LIFE_STATE state){life=state;}
  auto& GetActorRuntimeData(){return data;}
@@ -79,7 +80,8 @@ ${extract('struct State {')};
 std::unordered_map<RE::FormID,State> targets;
 void* mountFaction{};
 struct { std::shared_ptr<RE::Actor> value;auto get(){return value;}explicit operator bool()const{return bool(value);} } ridden;
-Settings::Data config;float playerSpeedDelta=0;std::uint32_t playerControllerFlags=0,downOriginalFlags=0;bool downActive=false,loadedRideState=false;
+namespace Crawl{void Remove(unsigned){}}
+Settings::Data config;float playerSpeedDelta=0;std::uint32_t playerControllerFlags=0,downOriginalFlags=0;bool downActive=false,loadedRideState=false,upActive=false;
 bool allowDismount=true;int dismountCalls{};
 int downRequests=0;void BeginDismount(){++downRequests;}
 bool Dismount(bool emergency=false,bool notify=true){++dismountCalls;if(allowDismount||emergency)ridden.value.reset();return allowDismount||emergency;}

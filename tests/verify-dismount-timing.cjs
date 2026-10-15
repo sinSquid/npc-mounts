@@ -13,6 +13,7 @@ namespace RE{struct hkVector4{struct{float m128_f32[4]{};}quad;};}
 struct Controller{RE::hkVector4 v;void GetLinearVelocityImpl(RE::hkVector4& out){out=v;}void SetLinearVelocityImpl(RE::hkVector4 in){v=in;}};
 struct Actor{Controller cc;Controller* GetCharController(){return &cc;}unsigned GetFormID(){return 1;}};
 namespace Seat{bool finished=false;float phase=-1;bool Finished(){return finished;}void Update(Actor*,Actor*,int,float p,int){phase=p;}}
+namespace Crawl{void Update(Actor*,int,float){}}
 namespace spdlog{int warnings=0;void warn(const char*){++warnings;}}
 bool downActive=true;float downElapsed=0,downDuration=.85f;int config=0,downOffset=0,dismounts=0,restores=0;
 struct State{bool restoreRequested=false;};std::unordered_map<unsigned,State> targets{{1,{}}};

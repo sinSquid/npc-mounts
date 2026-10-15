@@ -21,13 +21,13 @@ const own=n=>0x01000000+n;
 const definitions=[
  {effect:0x802,spell:0x804,key:'Convert',name:'人魅-人形坐骑化',delivery:2,description:'保留原种族和外貌，转换为使用人形爬行动作的坐骑。'},
  {effect:0x803,spell:0x805,key:'Restore',name:'人魅-解除坐骑化与束缚',delivery:0,description:'优先还原当前坐骑，否则还原准星目标。解除本Mod的固定、束缚和牵引；无目标时还原全部。'},
- {effect:0x806,spell:0x80A,key:'Anchor',name:'人魅-固定坐骑',delivery:2,description:'仅对坐骑状态NPC有效。生成固定桩并暂停自主跟随；外部强制传送不拦截，落地加载后解除固定。B可主动解除。'},
- {effect:0x807,spell:0x80B,key:'Capture',name:'人魅-束缚敌对目标',delivery:2,description:'仅对敌对的兼容人形NPC有效。束缚并停止敌对；B解除后恢复原有行为，不永久改写阵营。'},
+ {effect:0x806,spell:0x80A,key:'Anchor',name:'人魅-固定坐骑',delivery:2,description:'仅对坐骑状态NPC有效。生成固定桩并连接绳索，暂停自主跟随；需要LeashFramework。外部强制传送不拦截，加载后解除固定。人魅-解除坐骑化与束缚可主动解除。'},
+ {effect:0x807,spell:0x80B,key:'Capture',name:'人魅-束缚敌对目标',delivery:2,description:'仅对敌对的兼容人形NPC有效。转换为人形坐骑，连接固定桩绳索并停止敌对；需要LeashFramework。外部强制传送不拦截。人魅-解除坐骑化与束缚完整还原，不永久改写阵营。'},
  {effect:0x808,spell:0x80C,key:'Leash',name:'人魅-牵引坐骑',delivery:2,description:'对未固定、未骑乘的坐骑NPC生成LeashFramework牵引绳，由玩家牵引。需要LeashFramework。'},
- {effect:0x809,spell:0x80D,key:'Unleash',name:'人魅-解除牵引',delivery:2,description:'解除本Mod为目标创建的牵引绳，恢复静止坐骑状态；不移除其他Mod的既有牵引。'}
+ {effect:0x809,spell:0x80D,key:'Unleash',name:'人魅-解除牵引',delivery:2,description:'解除本Mod为目标创建的牵引绳；固定桩绳索同时解除固定并清理道具，保留坐骑化。不移除其他Mod的既有牵引。'}
 ];
 const hedr=Buffer.alloc(12);hedr.writeFloatLE(1.7);hedr.writeUInt32LE(22,4);hedr.writeUInt32LE(0x822,8);
-const header=record('TES4',0,[['HEDR',hedr],['CNAM',str('npc-mounts')],['SNAM',str('Humanoid crawl mounts, A-F spell tomes, restraints and optional LeashFramework')],['MAST',str('Skyrim.esm')],['DATA',Buffer.alloc(8)]],0x200);
+const header=record('TES4',0,[['HEDR',hedr],['CNAM',str('npc-mounts')],['SNAM',str('Humanoid crawl mounts, spell tomes, restraints and optional LeashFramework')],['MAST',str('Skyrim.esm')],['DATA',Buffer.alloc(8)]],0x200);
 const factions=[['NPCMountsConverted',0x800],['NPCMountsRider',0x801]].map(([name,id])=>record('FACT',own(id),[['EDID',str(name)],['FULL',str(name)],['DATA',u32(1)]]));
 function effect(def){const {effect:id,key,name,delivery,description}=def;const data=Buffer.alloc(152);data.writeUInt32LE((1<<10)|(1<<11)|(1<<26)|(1<<27),0);
  data.writeInt32LE(18,12);data.writeInt32LE(-1,16);data.writeFloatLE(0.1,48);data.writeUInt32LE(1,64);data.writeInt32LE(-1,68);
@@ -41,7 +41,7 @@ const books=definitions.map((d,i)=>record('BOOK',own(0x810+i),bookTemplate.map(f
  let data=Buffer.from(f.data);if(f.tag==='EDID')data=str('NPCMountsTome'+d.key);if(f.tag==='FULL')data=str('法术书：'+d.name);if(f.tag==='DESC')data=str(d.description);
  if(f.tag==='DATA'){assert(data.length===16);data.writeUInt32LE(own(d.spell),4);data.writeUInt32LE(50,8);}return[f.tag,data];
 })));
-const cuff=record('ARMO',own(0x821),cuffTemplate.filter(f=>!['MO2T','MO4T','VMAD'].includes(f.tag)).map(f=>[f.tag,f.tag==='EDID'?str('NPCMountsBindingCuffs'):f.tag==='FULL'?str('坐骑束缚绳环'):f.tag==='DESC'?str('由NPC坐骑法术生成；B解除并归还原手部装备。'):f.data]));
+const cuff=record('ARMO',own(0x821),cuffTemplate.filter(f=>!['MO2T','MO4T','VMAD'].includes(f.tag)).map(f=>[f.tag,f.tag==='EDID'?str('NPCMountsBindingCuffs'):f.tag==='FULL'?str('坐骑束缚绳环'):f.tag==='DESC'?str('由NPC坐骑法术生成；人魅-解除坐骑化与束缚解除并归还原手部装备。'):f.data]));
 const post=record('STAT',own(0x820),[['EDID',str('NPCMountsRestraintPost')],['OBND',Buffer.alloc(12)],['MODL',str('NPCMounts\\restraintpost_static.nif')],['DNAM',Buffer.alloc(8)]]);
 const output=Buffer.concat([header,group('FACT',factions),group('MGEF',definitions.map(effect)),group('SPEL',definitions.map(spell)),group('BOOK',books),group('STAT',[post]),group('ARMO',[cuff])]);
 fs.mkdirSync(out,{recursive:true});fs.writeFileSync(path.join(out,'NPCMounts.esp'),output);

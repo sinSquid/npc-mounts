@@ -26,6 +26,7 @@ const code = `
 #include <cassert>
 #include <cstdio>
 #include <cstdint>
+#include <string_view>
 namespace RE {
 enum class ACTOR_LIFE_STATE { kAlive=0, kDead=2, kRestrained=6 };
 struct Flags {
@@ -35,6 +36,9 @@ struct Flags {
   template<class T> void reset(T bits) { value &= ~static_cast<unsigned>(bits); }
 };
 struct Actor { bool enabled{true}; int aiCalls{}, lifeCalls{};
+  bool animationDriven=true,allowRotation=true;
+  bool IsAnimationDriven(){return animationDriven;}bool IsAllowRotation(){return allowRotation;}
+  void SetGraphVariableBool(std::string_view key,bool value){if(key=="bAnimationDriven")animationDriven=value;else if(key=="bAllowRotation")allowRotation=value;else assert(false);}
   enum class BOOL_FLAGS : unsigned { kForceAnimGraphUpdate=1u<<29,kMovementBlocked=1u<<27 };
   ACTOR_LIFE_STATE life=ACTOR_LIFE_STATE::kAlive;
   struct { Flags boolFlags; } data;
@@ -49,6 +53,7 @@ struct Actor { bool enabled{true}; int aiCalls{}, lifeCalls{};
 namespace Extras {bool leashed=false,anchored=false;bool Leashed(RE::Actor*){return leashed;}bool HoldAnchor(RE::Actor*){return anchored;}}
 constexpr unsigned ownedFlags=(1u<<27)|(1u<<20)|(1u<<21)|(1u<<29);
 struct { struct State { unsigned originalFlags{}; } state; State& at(unsigned) { return state; } } targets;
+${body('ReleaseAnimationMotion')}
 ${body('HoldPose')}
 int main() {
   RE::Actor actor;
@@ -56,7 +61,7 @@ int main() {
   assert(actor.enabled && actor.aiCalls==0 && actor.lifeCalls==1);
   assert(actor.life==RE::ACTOR_LIFE_STATE::kRestrained);
   assert((actor.data.boolFlags.value & (ownedFlags&~(1u<<29)))==(ownedFlags&~(1u<<29)));
-  assert(!(actor.data.boolFlags.value & (1u<<29)));
+  assert(actor.data.boolFlags.value & (1u<<29));
   targets.state.originalFlags=1u<<29; HoldPose(&actor);
   assert(actor.data.boolFlags.value & (1u<<29)); targets.state.originalFlags=0;
   RE::Actor frozen; frozen.enabled=false;Extras::anchored=true;HoldPose(&frozen);assert(frozen.aiCalls==0);Extras::anchored=false; HoldPose(&frozen);
@@ -65,6 +70,7 @@ int main() {
   RE::Actor alreadyRestrained; alreadyRestrained.life=RE::ACTOR_LIFE_STATE::kRestrained;
   HoldPose(&alreadyRestrained); assert(alreadyRestrained.lifeCalls==0);
   Extras::leashed=true;HoldPose(&alreadyRestrained);assert(alreadyRestrained.life==RE::ACTOR_LIFE_STATE::kAlive&&!(alreadyRestrained.data.boolFlags.value&(1u<<27)));
+  assert(!alreadyRestrained.animationDriven&&!alreadyRestrained.allowRotation);
   Extras::leashed=false;HoldPose(&alreadyRestrained);assert(alreadyRestrained.life==RE::ACTOR_LIFE_STATE::kRestrained&&(alreadyRestrained.data.boolFlags.value&(1u<<27)));
   RE::Actor dead; dead.life=RE::ACTOR_LIFE_STATE::kDead;
   HoldPose(&dead); assert(dead.life==RE::ACTOR_LIFE_STATE::kDead);

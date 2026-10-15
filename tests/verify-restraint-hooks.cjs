@@ -65,12 +65,14 @@ int main(){
  assert(!CombatHook(&actor,&other,nullptr)&&!CombatHook(&other,&actor,nullptr)&&combats==1);
  originalMove(&actor,handle,&elsewhere,nullptr,destination,{});assert(moves==3);
  bindings[1].pacified=false;tethers[9]={Phase::Active,false,5};
- bindings[1].releaseRequested=true;SKSE::SerializationInterface save;Save(&save);assert(save.records.size()==2&&save.records[0].version==2&&save.records[0].bytes.size()==76&&save.records[1].bytes.size()==12);
+ tethers[9].anchor=true;
+ bindings[1].releaseRequested=true;SKSE::SerializationInterface save;Save(&save);assert(save.records.size()==2&&save.records[0].version==2&&save.records[0].bytes.size()==76&&save.records[1].version==2&&save.records[1].bytes.size()==16);
  bindings.clear();tethers.clear();
  for(save.index=0;save.index<save.records.size();++save.index){save.cursor=0;auto& r=save.records[save.index];assert(Load(&save,r.type,r.version,static_cast<unsigned>(r.bytes.size())));}
  auto restored=bindings.at(1);assert(restored.position==pin.position&&restored.angle==pin.angle&&restored.releaseRequested&&restored.oldHands==4&&restored.flags==pin.flags&&restored.teammate&&restored.teammateSaved);
- assert(tethers.at(9).phase==Phase::Reconciling&&!tethers.at(9).wanted);
- tethers[10]={Phase::Checking,true,20};SKSE::SerializationInterface filtered;Save(&filtered);assert(filtered.records[1].bytes.size()==12);
+ assert(tethers.at(9).phase==Phase::Reconciling&&!tethers.at(9).wanted&&tethers.at(9).anchor);
+ auto oldTether=save;oldTether.index=1;oldTether.cursor=0;oldTether.records[1].bytes.resize(12);tethers.clear();assert(Load(&oldTether,'TETH',1,12)&&!tethers.at(9).anchor);
+ tethers[10]={Phase::Checking,true,20};SKSE::SerializationInterface filtered;Save(&filtered);assert(filtered.records[1].bytes.size()==16);
  bindings.clear();assert(HostileHook(&actor,&other)&&CombatHook(&actor,&other,nullptr));
  save.index=0;save.cursor=0;assert(Load(&save,'BIND',1,67)&&bindings.empty()); // malformed count/stride rejected
  actor.parent=&elsewhere;actor.pos=destination;auto before=moves;for(int i=0;i<10000;++i)Freeze(&actor,pin);assert(moves==before&&actor.pos==destination);

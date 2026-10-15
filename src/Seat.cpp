@@ -19,6 +19,7 @@ const char* bindError="座位资源未加载，请查看NPCMounts日志";
 RE::NiPoint3 target;
 float progress=-1.f;
 bool active=false, loaded=false;
+bool entering=false;
 std::atomic<bool> wrote=false;
 std::atomic<bool> finished=false;
 using Generate=void(*)(RE::hkbGenerator*,const RE::hkbContext&,const RE::hkbGeneratorOutput**,RE::hkbGeneratorOutput&,float);
@@ -91,7 +92,7 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     if(phase>=0)std::memcpy(outputPose,pose.data(),bytes);
     else std::memcpy(outputPose+4*sizeof(Pose),&pose[4],sizeof(Pose));
     wrote.store(true,std::memory_order_relaxed);
-    if(phase>=1.f)finished.store(true,std::memory_order_release);
+    if(entering?phase==0.f:phase>=1.f)finished.store(true,std::memory_order_release);
 }
 bool Install(){
     std::ifstream file("Data/SKSE/Plugins/NPCMounts/Dismount.nmp",std::ios::binary);
@@ -131,7 +132,8 @@ bool Bind(RE::Actor* player){
     return !graphs.empty();
 }
 const char* BindError(){return bindError;}
-void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();wrote=false;finished=false;progress=-1.f;}
+void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();wrote=false;finished=false;progress=-1.f;entering=false;}
+void Entering(bool value){std::scoped_lock lock(mutex);entering=value;finished=false;}
 bool Working(){return wrote.load(std::memory_order_relaxed);}
 bool Finished(){return finished.load(std::memory_order_acquire);}
 void Update(RE::Actor* player,RE::Actor* mount,const Settings::Data& config,float phase,RE::NiPoint3 exitOffset){
