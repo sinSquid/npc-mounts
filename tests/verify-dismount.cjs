@@ -20,8 +20,8 @@ struct bhkPickData {struct {struct {float Dot3(hkVector4){return 1.f;}}normal;fl
 struct Controller {bhkWorld world;auto* GetHavokWorld(){return &world;}};
 struct Actor {enum class BOOL_FLAGS:unsigned{};struct Flags{void reset(unsigned){}void set(BOOL_FLAGS){}};struct{Flags boolFlags;}data;
  auto& GetActorRuntimeData(){return data;}
- int id=1,rank=3;bool marker=true,hasController=true;unsigned resetEvents=0;NiPoint3 pos{100,200,300};Controller cc;
- auto GetPosition(){return pos;}void SetPosition(NiPoint3 p,bool){pos=p;}float GetAngleZ(){return 0.f;}
+ int id=1,rank=3;bool marker=true,hasController=true;unsigned resetEvents=0,positionWrites=0;NiPoint3 pos{100,200,300};Controller cc;
+ auto GetPosition(){return pos;}void SetPosition(NiPoint3 p,bool){pos=p;++positionWrites;}float GetAngleZ(){return 0.f;}
  Controller* GetCharController(){return hasController?&cc:nullptr;}int GetFormID(){return id;}
  void RemoveFromFaction(void*){marker=false;}void AddToFaction(void*,int r){rank=r;}
  void NotifyAnimationGraph(const char*){++resetEvents;}
@@ -49,6 +49,8 @@ int main(){
   if(scenario<3)assert((p->pos==RE::NiPoint3{100,200,300}));
   else assert(p->pos.x==196&&p->pos.z==302);
  }
+ auto emergency=std::make_shared<RE::Actor>();ridden.value=emergency;targets[1]={};auto* ep=RE::PlayerCharacter::GetSingleton();ep->positionWrites=0;ep->marker=true;
+ assert(Dismount(true)&&!ridden&&!ep->marker&&emergency->positionWrites==0&&ep->positionWrites==0);
  ridden.stale=true;auto* p=RE::PlayerCharacter::GetSingleton();p->marker=true;restores=0;
  assert(Dismount()&&!ridden&&!p->marker&&restores==1);
  std::puts("PASS: actual Dismount never refuses no floor, wall, missing controller; optional clear side and stale-handle cleanup. No airborne rejection in implementation.");

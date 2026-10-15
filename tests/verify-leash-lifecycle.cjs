@@ -50,7 +50,8 @@ int main(){RE::Actor actor;
  StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",false);assert(!Busy(&actor));
  StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",false);assert(Leashed(&actor));
  dispatch=false;StopTether(&actor);assert(Busy(&actor)&&tethers.at(1).phase==Phase::Active&&!Leashed(&actor));dispatch=true;
- AdvanceTethers(1);StopTether(&actor);Reply("DisconnectLeash",false);assert(!Busy(&actor));
+ AdvanceTethers(1);StopTether(&actor);Reply("DisconnectLeash",false);assert(Busy(&actor)&&tethers.at(1).phase==Phase::Reconciling&&!tethers.at(1).pending);
+ AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
  dispatch=false;StartTether(&actor);assert(!Busy(&actor));dispatch=true;
  StartTether(&actor);auto old=queue.front().callback;queue.clear();tethers.clear();++serial;
  StartTether(&actor);const auto token=tethers.at(1).token;old(true);assert(tethers.at(1).token==token);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",false);
@@ -69,6 +70,11 @@ int main(){RE::Actor actor;
  tethers[1]={Phase::Reconciling,false,++serial};CheckTether(&actor);Reply("GetLeashHolder",true);assert(!Leashed(&actor));StopTether(&actor);
  AdvanceTethers(10);assert(tethers.at(1).phase==Phase::Failed);for(int i=0;i<1000;i++)StopTether(&actor);assert(queue.size()==1);
  Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ // False disconnect with ownership still present retries at most three times.
+ tethers[1]={Phase::Active,false,++serial};
+ for(unsigned i=1;i<=3;++i){StopTether(&actor);Reply("DisconnectLeash",false);assert(Busy(&actor)&&tethers.at(1).failures==i);
+  if(i<3){AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",true);assert(tethers.at(1).failures==i);}}
+ assert(tethers.at(1).phase==Phase::Failed&&!tethers.at(1).pending);for(int i=0;i<1000;++i){AdvanceTethers(.02f);StopTether(&actor);}assert(queue.empty());tethers.clear();
  // A missing query callback does not accumulate more queries or allow locomotion.
  tethers[1]={Phase::Active,true,++serial};CheckTether(&actor);AdvanceTethers(10);assert(!Leashed(&actor)&&tethers.at(1).phase==Phase::Failed);
  for(int i=0;i<1000;i++)CheckTether(&actor);assert(queue.size()==1);Reply("GetLeashHolder",true);assert(tethers.at(1).phase==Phase::Failed);
@@ -77,6 +83,14 @@ int main(){RE::Actor actor;
  Unleashed(1,0,6);assert(Busy(&actor)); // previous save
  Unleashed(1,1,5);assert(Busy(&actor)); // previous rope in this save
  Unleashed(1,1,6);assert(!Busy(&actor)); // current rope's event
- std::puts("PASS: actual E/F lifecycle, invalid targets, existing rope rejection, cancellation before/during creation, dispatch/apply failure, release retry and stale callback isolation. Not VM/engine QA.");
+ // Repeated cycles must not leave pending callbacks or block the next E.
+ for(int i=0;i<1000;++i){StartTether(&actor);if(i%4==0)StopTether(&actor);Reply("IsLeashed",false);
+  if(i%4==0){assert(!Busy(&actor)&&queue.empty());continue;}
+  if(i%4==1)StopTether(&actor);Reply("ApplyStandaloneLeash",true);
+  if(i%4!=1){Reply("SetRagdollOverride",false);StopTether(&actor);}
+  Reply("DisconnectLeash",i%4!=2);
+  if(i%4==2){assert(Busy(&actor));AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",false);}
+  assert(!Busy(&actor)&&queue.empty());}
+ std::puts("PASS: actual E/F lifecycle and 1000 repeated cancellation/reconciliation cycles; invalid targets, timeout/retry bounds and stale callback isolation. Not VM/engine QA.");
 }
 `);

@@ -102,8 +102,17 @@ void HoldPose(RE::Actor* actor)
 }
 constexpr auto ridePhysics = static_cast<RE::CHARACTER_FLAGS>((1u << 14) | (1u << 28) | (1u << 27));
 constexpr auto proxyPhysics = static_cast<RE::CHARACTER_FLAGS>((1u << 17) | (1u << 27));
+bool ActorReady(RE::Actor* actor){
+    auto* cell=actor->GetParentCell();
+    return cell&&cell->IsAttached()&&actor->Get3D();
+}
+bool RideReady(RE::Actor* mount,RE::Actor* player){
+    auto* cell=player->GetParentCell();
+    return cell==mount->GetParentCell()&&ActorReady(player)&&ActorReady(mount);
+}
 void SyncMount(RE::Actor* mount, RE::Actor* player, bool force = false)
 {
+    if(!RideReady(mount,player))return;
     auto* cc = mount->GetCharController();
     if (!cc) return;
     // Keep simulation/animation processing alive. Only actor-to-actor collisions
@@ -154,6 +163,10 @@ void SetMotion(RE::Actor* actor, State& state, int animation)
     else if (!moving(animation) && moving(previous)) actor->NotifyAnimationGraph("moveStop");
     if (animation == 3 && previous != 3) actor->NotifyAnimationGraph("SprintStart");
 }
+void ResetPose(RE::Actor* actor,State& state){
+    actor->AddToFaction(mountFaction,0);state.animation=0;
+    StopMotion(actor);actor->NotifyAnimationGraph("IdleForceDefaultState");
+}
 bool Dismount(bool emergency = false, bool = true)
 {
     auto mount = ridden.get();
@@ -198,8 +211,10 @@ bool Dismount(bool emergency = false, bool = true)
     player->NotifyAnimationGraph("IdleForceDefaultState");
     RestoreController(player, ridePhysics, playerControllerFlags);
     RestoreController(mount.get(), proxyPhysics, mountControllerFlags);
-    mount->SetPosition(mount->GetPosition(), true); // Resync the proxy once, when returning physics.
-    player->SetPosition(position, true);
+    if(!emergency){
+        mount->SetPosition(mount->GetPosition(), true); // Resync only a normal, completed dismount.
+        player->SetPosition(position, true);
+    }
     if (auto state = targets.find(mount->GetFormID()); state != targets.end()) {
         mount->AddToFaction(mountFaction, 0);
         state->second.animation = 0;
@@ -255,6 +270,7 @@ bool Convert(RE::Actor* actor)
 void Restore(RE::Actor* actor)
 {
     if (!Converted(actor)) {Extras::Release(actor);return;}
+    if(!ActorReady(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
     if(!Extras::Release(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
     const auto saved = targets.at(actor->GetFormID());
     const bool emergency = actor->IsDead() || actor->GetCurrentScene();
@@ -293,6 +309,7 @@ void Mount(RE::Actor* actor)
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto* cc = player->GetCharController();
     if (!cc || player->IsOnMount() || player->IsDead()) return;
+    if(!RideReady(actor,player))return;
     if(!Seat::Bind(player)){RE::SendHUDMessage::ShowHUDMessage(Seat::BindError());return;}
     ridden = actor->GetHandle();
     mountControllerFlags = actor->GetCharController()->flags.underlying() & static_cast<std::uint32_t>(proxyPhysics);
@@ -324,7 +341,8 @@ void Tick(RE::Actor* player, float delta)
     for (const auto& [id, state] : targets) {
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
         if (actor && (actor->IsDead() || (actor->GetCurrentScene()&&!Extras::Bound(actor)) || (state.restoreRequested && restoreRetry <= 0.f))) release.push_back(id);
-        else if (actor && actor->Get3D()) {
+        else if (actor && ActorReady(actor)) {
+            if(state.animation<0)ResetPose(actor,targets.at(id)); // Recover a load task that ran before 3D was ready.
             HoldPose(actor);ApplyStats(actor,targets.at(id));
             if(Extras::Leashed(actor))if(auto* controller=actor->GetCharController()){
                 targets.at(id).leashMoving=true;
@@ -342,7 +360,7 @@ void Tick(RE::Actor* player, float delta)
     if (!Converted(mount.get())) { Dismount(true); return; }
     if (player->IsDead() || mount->IsDead() || !mount->Get3D() || mount->GetCurrentScene()) { Dismount(true); return; }
     if (!player->GetCharController() || !mount->GetCharController()) { Dismount(true); return; }
-    if (player->GetParentCell() != mount->GetParentCell()) { Dismount(true); return; }
+    if (!RideReady(mount.get(),player)) { Dismount(true); return; }
     SyncMount(mount.get(), player);
     ApplySpeed(player,config.speedMultiplier,playerSpeedDelta);
     if(dismountHold.Tick(delta,config.holdSeconds))BeginDismount();
@@ -412,14 +430,14 @@ void NPCUpdate(RE::Actor* actor, float delta)
     // Supply the current transform before animation/model publication as well.
     if (auto mount = ridden.get(); mount.get() == actor && !RE::UI::GetSingleton()->GameIsPaused()) {
         auto* player = RE::PlayerCharacter::GetSingleton();
-        if (!player->IsDead() && !actor->IsDead() && player->GetParentCell() == actor->GetParentCell()) SyncMount(actor, player);
+        if (!player->IsDead() && !actor->IsDead() && RideReady(actor,player)) SyncMount(actor, player);
     }
     originalNPCUpdate(actor, delta);
     Extras::AfterActorUpdate(actor);
     auto mount = ridden.get();
     if (mount.get() != actor || actor->IsDead() || !actor->Get3D() || RE::UI::GetSingleton()->GameIsPaused()) return;
     auto* player = RE::PlayerCharacter::GetSingleton();
-    if (player->IsDead() || player->GetParentCell() != actor->GetParentCell()) return;
+    if (player->IsDead() || !RideReady(actor,player)) return;
     ++npcUpdates;
     lastNPCDrift = (actor->GetPosition() - player->GetPosition()).Length();
     // Character::Update can run after Player::Update and publish its own proxy
@@ -437,7 +455,9 @@ bool ActivateInput(RE::ActivateHandler* handler, RE::InputEvent* event)
     if (!ridden && !Converted(actor)) return true;
     if (auto* button = event->AsButtonEvent(); button && button->IsDown()) {
         auto handle = actor ? actor->GetHandle() : RE::ActorHandle{};
-        SKSE::GetTaskInterface()->AddTask([handle] {
+        const auto epoch=Extras::Session();
+        SKSE::GetTaskInterface()->AddTask([handle,epoch] {
+            if(Extras::Session()!=epoch)return;
             if (!ridden) if (auto target = handle.get()) Mount(target.get());
         });
     }
@@ -476,7 +496,9 @@ RE::UI_MESSAGE_RESULTS DialogueMenu(RE::DialogueMenu* menu, RE::UIMessage& messa
         if (Converted(actor)) {
             RE::UIMessageQueue::GetSingleton()->AddMessage(RE::BSFixedString(RE::DialogueMenu::MENU_NAME), RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
             auto handle = actor->GetHandle();
-            SKSE::GetTaskInterface()->AddTask([handle] {
+            const auto epoch=Extras::Session();
+            SKSE::GetTaskInterface()->AddTask([handle,epoch] {
+                if(Extras::Session()!=epoch)return;
                 if (auto target = handle.get(); Converted(target.get())) { target->StopCurrentDialogue(); target->EndDialogue(); }
             });
             return RE::UI_MESSAGE_RESULTS::kHandled;
@@ -596,16 +618,19 @@ struct Events final : RE::BSTEventSink<RE::TESMagicEffectApplyEvent>, RE::BSTEve
     RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event, RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override
     {
         if (!event || !event->loaded) return RE::BSEventNotifyControl::kContinue;
-        Extras::Loaded(RE::TESForm::LookupByID<RE::Actor>(event->formID));
-        if(!targets.contains(event->formID))return RE::BSEventNotifyControl::kContinue;
-        if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(event->formID)) {
-            if (targets.at(event->formID).restoreRequested) { Restore(actor); return RE::BSEventNotifyControl::kContinue; }
+        if(!RE::TESForm::LookupByID<RE::Actor>(event->formID))return RE::BSEventNotifyControl::kContinue;
+        const auto id=event->formID;const auto epoch=Extras::Session();
+        SKSE::GetTaskInterface()->AddTask([id,epoch]{
+            if(Extras::Session()!=epoch)return;
+            auto* actor=RE::TESForm::LookupByID<RE::Actor>(id);
+            if(!actor||!actor->Get3D()||!actor->GetParentCell()||!actor->GetParentCell()->IsAttached())return;
+            Extras::Loaded(actor);
+            if(!targets.contains(id))return;
+            if (targets.at(id).restoreRequested) { Restore(actor); return; }
+            if(actor->IsDead())return;
             HoldPose(actor);
-            actor->AddToFaction(mountFaction, 0);
-            targets.at(event->formID).animation = 0;
-            StopMotion(actor);
-            actor->NotifyAnimationGraph("IdleForceDefaultState");
-        }
+            ResetPose(actor,targets.at(id));
+        });
         return RE::BSEventNotifyControl::kContinue;
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::TESFormDeleteEvent* event, RE::BSTEventSource<RE::TESFormDeleteEvent>*) override
@@ -665,7 +690,7 @@ void Load(SKSE::SerializationInterface* save)
         }
     }
 }
-void Revert(SKSE::SerializationInterface*) { Extras::Revert();Seat::Clear();targets.clear();ridden.reset();dismountHold.Release();downActive=loadedRideState=false;playerSpeedDelta=0; jumpTimer = landTimer = restoreRetry = 0.f; rideGait = 0; wasAir = false; }
+void Revert(SKSE::SerializationInterface*) { Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();downActive=loadedRideState=false;playerSpeedDelta=0; jumpTimer = landTimer = restoreRetry = 0.f; rideGait = 0; wasAir = false; }
 void Message(SKSE::MessagingInterface::Message* message)
 {
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
@@ -700,7 +725,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESObjectLoadedEvent>(&events);
         source->AddEventSink<RE::TESFormDeleteEvent>(&events);
         RegisterRideInput();
-        spdlog::info("Ready 0.3.2: extended rider skeletons and teleport-safe soft anchors");
+        spdlog::info("Ready 0.3.4: emergency dismount, deferred restore and session-safe queued actions");
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
         if(message->type==SKSE::MessagingInterface::kPostLoadGame&&!message->data)return;
@@ -717,12 +742,12 @@ void Message(SKSE::MessagingInterface::Message* message)
         std::vector<RE::FormID> ids;
         for (const auto& [id, state] : targets) ids.push_back(id);
         for (auto id : ids) if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(id)) {
+            if(!actor->Get3D()||!actor->GetParentCell()||!actor->GetParentCell()->IsAttached())continue;
             if (targets.at(id).restoreRequested) { Restore(actor); continue; }
+            if(actor->IsDead())continue;
             HoldPose(actor);
             ApplyStats(actor,targets.at(id));
-            actor->AddToFaction(mountFaction, 0); targets.at(id).animation = 0;
-            StopMotion(actor);
-            actor->NotifyAnimationGraph("IdleForceDefaultState");
+            ResetPose(actor,targets.at(id));
         }
     }
 }

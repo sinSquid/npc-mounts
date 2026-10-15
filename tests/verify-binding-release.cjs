@@ -37,7 +37,7 @@ auto* cuffs=&RE::cuffArmor;bool hooksReady=true;unsigned deleted=0,freeze=0;
 void DeletePost(unsigned id){if(id)++deleted;}void StopTether(RE::Actor* a){tethers.at(a->id).wanted=false;}
 void Freeze(RE::Actor*,const Binding&){++freeze;}
 bool originalHostile(RE::Actor* a,RE::Actor*){return a->hostile;}bool originalCombat(RE::Actor*,RE::Actor*,RE::CombatGroup*){return true;}
-bool displaced=false;bool Displaced(RE::Actor*,const Binding&){return displaced;}
+bool displaced=false,ready=true;bool Ready(RE::Actor*){return ready;}bool Displaced(RE::Actor*,const Binding&){return displaced;}
 ${take('bool Find(')}${take('bool Pacified(')}${take('bool HostileHook(')}${take('bool CombatHook(')}${take('bool Busy(')}${take('bool HoldAnchor(')}${take('bool Release(')}${take('void Loaded(')}
 int main(){RE::Actor a,b;b.id=2;Binding binding;binding.pacified=true;binding.ai=false;binding.life=0;binding.flags=1u<<20;binding.priorCuffs=2;binding.oldHands=4;
  a.data.boolFlags.value=unsigned(flagsMask)|(1u<<18);bindings[1]=binding;
@@ -53,6 +53,9 @@ int main(){RE::Actor a,b;b.id=2;Binding binding;binding.pacified=true;binding.ai
   assert(HoldAnchor(&a)&&!a.ai&&!a.IsPlayerTeammate());Release(&a);assert(a.ai&&a.IsPlayerTeammate()==teammate&&(a.data.boolBits.value&(1u<<10)));}
  binding.teammateSaved=false;bindings[1]=binding;a.data.boolBits.value=1u<<26;assert(HoldAnchor(&a));assert(bindings.at(1).teammateSaved&&bindings.at(1).teammate);Release(&a);assert(a.IsPlayerTeammate());
  bindings[1]=binding;displaced=true;a.ai=true;assert(HoldAnchor(&a)&&a.ai&&a.IsPlayerTeammate());auto before=freeze;Loaded(&a);assert(freeze==before);Release(&a);displaced=false;
+ binding.life=6;bindings[1]=binding;a.life=RE::ACTOR_LIFE_STATE::kAlive;Release(&a);assert(a.life==RE::ACTOR_LIFE_STATE::kRestrained);
+ bindings[1]=binding;ready=false;a.ai=true;auto idleBefore=a.idles;assert(HoldAnchor(&a)&&a.ai);Loaded(&a);assert(bindings.contains(1)&&a.ai&&a.idles==idleBefore);
+ auto unequipBefore=RE::ActorEquipManager::GetSingleton()->unequips;assert(!Release(&a)&&bindings.at(1).releaseRequested&&a.ai&&RE::ActorEquipManager::GetSingleton()->unequips==unequipBefore);ready=true;Loaded(&a);assert(!bindings.contains(1));
  tethers[1]={Phase::Active,true,1};assert(!Release(&a)&&!tethers.at(1).wanted);
  tethers[1].phase=Phase::Failed;assert(Release(&a)&&tethers.contains(1)); // B unblocks local restoration without falsely claiming rope cleanup
  std::puts("PASS: actual C/D release, dynamic hostility restoration, original flags/AI/equipment, idempotence, deferred/dead load cleanup, late D load, B waits normally but not on terminal bridge failure.");

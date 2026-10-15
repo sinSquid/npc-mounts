@@ -40,6 +40,10 @@ Hostile originalHostile{};Combat originalCombat{};
 void Notify(const char* text){RE::SendHUDMessage::ShowHUDMessage(text);}
 bool Find(RE::FormID id,Binding& out){std::scoped_lock lock(mutex);auto it=bindings.find(id);if(it==bindings.end())return false;out=it->second;return true;}
 bool Pacified(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b)&&b.pacified;}
+bool Ready(RE::Actor* actor){
+    auto* cell=actor->GetParentCell();
+    return cell&&cell->IsAttached()&&actor->Get3D();
+}
 bool Displaced(RE::Actor* actor,const Binding& b){
     auto* cell=actor->GetParentCell();
     if(!cell)return true;
@@ -119,7 +123,12 @@ void StopTether(RE::Actor* actor){
     it->second.wanted=false;if(it->second.phase!=Phase::Active||it->second.retry>0)return;
     if(!leashAvailable){tethers.erase(it);return;}
     it->second.phase=Phase::Stopping;it->second.pending=true;it->second.elapsed=0;const auto token=it->second.token;
-    if(!Call("DisconnectLeash",[id,token](bool){if(Current(id,token))tethers.erase(id);},RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),actor)){
+    if(!Call("DisconnectLeash",[id,token](bool removed){
+        if(!Current(id,token))return;
+        if(removed){tethers.erase(id);return;}
+        auto& t=tethers.at(id);t.pending=false;t.phase=Phase::Reconciling;t.elapsed=0;t.retry=1.f;
+        if(++t.failures>=3)FailTether(t);
+    },RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),actor)){
         it->second.pending=false;it->second.phase=Phase::Active;it->second.retry=1.f;
         if(++it->second.failures>=3)FailTether(it->second);
     }
@@ -167,7 +176,7 @@ bool Bound(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b);
 bool HoldAnchor(RE::Actor* actor){
     if(!actor)return false;
     {std::scoped_lock lock(mutex);auto it=bindings.find(actor->GetFormID());if(it==bindings.end()||it->second.pacified)return false;
-        if(it->second.releaseRequested||Displaced(actor,it->second))return true;
+        if(it->second.releaseRequested||!Ready(actor)||Displaced(actor,it->second))return true;
         if(!it->second.teammateSaved){it->second.teammate=actor->IsPlayerTeammate();it->second.teammateSaved=true;}}
     if(actor->IsAIEnabled())actor->EnableAI(false);
     actor->GetActorRuntimeData().boolBits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);
@@ -178,6 +187,7 @@ bool Busy(RE::Actor* actor){return actor&&tethers.contains(actor->GetFormID());}
 bool Release(RE::Actor* actor){
     if(!actor)return true;if(Busy(actor)){StopTether(actor);if(Busy(actor)&&tethers.at(actor->GetFormID()).phase!=Phase::Failed)return false;}
     Binding b;const auto id=actor->GetFormID();if(!Find(id,b))return true;
+    if(!Ready(actor)){std::scoped_lock lock(mutex);bindings.at(id).releaseRequested=true;return false;}
     {std::scoped_lock lock(mutex);bindings.erase(id);}
     if(cuffs){
         auto* equip=RE::ActorEquipManager::GetSingleton();equip->UnequipObject(actor,cuffs,nullptr,1,nullptr,false,true,false,true);
@@ -187,7 +197,8 @@ bool Release(RE::Actor* actor){
     }
     DeletePost(b.post);auto& flags=actor->GetActorRuntimeData().boolFlags;flags.reset(flagsMask);flags.set(static_cast<RE::Actor::BOOL_FLAGS>(b.flags));
     if(b.teammateSaved){auto& bits=actor->GetActorRuntimeData().boolBits;bits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);if(b.teammate)bits.set(RE::Actor::BOOL_BITS::kPlayerTeammate);}
-    if(!actor->IsDead()&&actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained)actor->SetLifeState(static_cast<RE::ACTOR_LIFE_STATE>(b.life));
+    if(!actor->IsDead()&&(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained||
+        actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kAlive))actor->SetLifeState(static_cast<RE::ACTOR_LIFE_STATE>(b.life));
     actor->EnableAI(b.ai);
     if(!actor->IsDead()){actor->NotifyAnimationGraph("IdleForceDefaultState");if(b.ai)actor->EvaluatePackage(false,false);}return true;
 }
@@ -207,7 +218,8 @@ void CheckTether(RE::Actor* actor){
         if(t.phase!=Phase::Active&&t.phase!=Phase::Reconciling&&t.phase!=Phase::Failed)return;
         if(t.pending)return;
         if(!owned){tethers.erase(id);return;}
-        t.phase=Phase::Active;t.elapsed=0;t.failures=0;
+        t.phase=Phase::Active;t.elapsed=0;
+        if(t.wanted)t.failures=0; // A positive ownership query does not undo failed disconnect attempts.
     },actor)){tether.query=false;tether.retry=1.f;if(++tether.failures>=3)FailTether(tether);}
 }
 void AdvanceTethers(float delta){
@@ -223,6 +235,7 @@ void Tick(float delta){
     AdvanceTethers(delta);
     std::vector<std::pair<RE::FormID,Binding>> work;{std::scoped_lock lock(mutex);for(const auto& item:bindings)work.push_back(item);}
     for(const auto& [id,b]:work)if(auto* actor=RE::TESForm::LookupByID<RE::Actor>(id)){
+        if(!Ready(actor))continue;
         if(actor->IsDead()||b.releaseRequested){Release(actor);continue;}
         if(!b.pacified){
             auto* cell=actor->GetParentCell();
@@ -300,7 +313,7 @@ void Revert(){std::scoped_lock lock(mutex);++session;bindings.clear();tethers.cl
 std::uint64_t Session(){return session.load();}
 void Deleted(RE::FormID id){Binding b;if(Find(id,b)){{std::scoped_lock lock(mutex);bindings.erase(id);}DeletePost(b.post);}tethers.erase(id);}
 void Loaded(RE::Actor* actor){
-    Binding b;if(!actor||!Find(actor->GetFormID(),b))return;
+    Binding b;if(!actor||!Ready(actor)||!Find(actor->GetFormID(),b))return;
     if(!hooksReady||actor->IsDead()||b.releaseRequested){Release(actor);return;}
     if(!b.pacified&&Displaced(actor,b))return; // Tick releases after the destination is attached.
     actor->EnableAI(true);actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);actor->GetActorRuntimeData().boolFlags.set(flagsMask);Freeze(actor,b);

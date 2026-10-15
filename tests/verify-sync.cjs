@@ -27,8 +27,10 @@ struct Flags {
  template<class T>void set(T bits){value|=static_cast<unsigned>(bits);}
 };
 struct Controller {Flags flags;NiPoint3 position;float fallTime{};void SetLinearVelocityImpl(hkVector4){};};
+struct Cell{bool attached=true;bool IsAttached(){return attached;}};inline Cell cell;
 struct Actor {
  NiPoint3 position;Controller controller;float angle{};unsigned writes{};
+ Cell* parent=&cell;bool loaded=true;auto* GetParentCell(){return parent;}void* Get3D(){return loaded?this:nullptr;}
  auto* GetCharController(){return &controller;}
  auto GetPosition(){return position;}auto GetAngleZ(){return angle;}
  void SetAngle(NiPoint3 value){angle=value.z;}
@@ -36,10 +38,14 @@ struct Actor {
  void EngineUpdate(){position=controller.position;}
 };
 }
+${(()=>{const s=source.indexOf('bool ActorReady('),e=source.indexOf('void SyncMount(',s);return source.slice(s,e);})()}
 ${extract('SyncMount')}
 ${extract('RestoreController')}
 int main(){
  RE::Actor player,mount;mount.controller.flags.value=(1u<<17)|(1u<<21);
+ RE::Cell elsewhere;mount.parent=&elsewhere;SyncMount(&mount,&player,true);assert(mount.writes==0);mount.parent=&RE::cell;
+ RE::cell.attached=false;SyncMount(&mount,&player,true);assert(mount.writes==0);RE::cell.attached=true;
+ mount.loaded=false;SyncMount(&mount,&player,true);assert(mount.writes==0);mount.loaded=true;
  const auto owned=static_cast<RE::CHARACTER_FLAGS>((1u<<17)|(1u<<27));
  const unsigned saved=mount.controller.flags.value&static_cast<unsigned>(owned);
  // Reproduce the old bug: false moves the reference, then physics puts it back.

@@ -30,7 +30,7 @@ struct Flags {
 };
 struct Actor {
  enum class BOOL_FLAGS : unsigned {};
- FormID id; bool enabled=true,dead=false,marker=true,inScene=false; unsigned evaluations{};
+ FormID id; bool enabled=true,dead=false,marker=true,inScene=false,ready=true; unsigned evaluations{};
  float scale=1.24f,speed=100;unsigned scaleWrites=0;bool quantizeScale=false;
  float GetScale(){return scale;}void SetScale(float value){++scaleWrites;scale=quantizeScale?std::round(value*100)/100:value;}
  Actor* AsActorValueOwner(){return this;}float GetActorValue(ActorValue){return speed;}
@@ -84,6 +84,7 @@ bool allowDismount=true;int dismountCalls{};
 int downRequests=0;void BeginDismount(){++downRequests;}
 bool Dismount(bool emergency=false,bool notify=true){++dismountCalls;if(allowDismount||emergency)ridden.value.reset();return allowDismount||emergency;}
 bool Converted(RE::Actor* actor){return actor&&targets.contains(actor->id);}
+bool ActorReady(RE::Actor* actor){return actor->ready;}
 ${extract('void ApplySpeed(')}
 ${extract('void ApplyStats(')}
 ${extract('void StopMotion(')}
@@ -101,6 +102,7 @@ int main(){
  assert(normal.life==RE::ACTOR_LIFE_STATE::kAlive);
  assert(normal.data.boolFlags.value==((1u<<18)|(1u<<20)));
  assert(normal.events.size()==3&&normal.events[0]=="SprintStop"&&normal.events[1]=="moveStop");
+ RE::Actor deferred{16};prepare(deferred);deferred.ready=false;Restore(&deferred);assert(targets.at(16).restoreRequested&&deferred.marker&&deferred.events.empty());deferred.ready=true;Restore(&deferred);assert(!targets.contains(16)&&!deferred.marker);
  RE::Actor disabled{2};prepare(disabled,false,RE::ACTOR_LIFE_STATE::kRestrained);Restore(&disabled);
  assert(!disabled.enabled&&disabled.evaluations==0&&disabled.life==RE::ACTOR_LIFE_STATE::kRestrained);
  RE::Actor tethered{14};prepare(tethered);Extras::ready=false;Restore(&tethered);assert(targets.at(14).restoreRequested&&tethered.marker);

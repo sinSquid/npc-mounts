@@ -36,7 +36,7 @@ bool Write(const std::filesystem::path& path, Data value) {
     if (!out) return false;
     out.imbue(std::locale::classic());
     out << std::setprecision(std::numeric_limits<float>::max_digits10);
-    out << "; NPCMounts 0.3.2 - UTF-8; menu and INI use the same limits\n[Mounts]\n";
+    out << "; NPCMounts 0.3.4 - UTF-8; menu and INI use the same limits\n[Mounts]\n";
     for (const auto& f : bools) out << f.key << '=' << (value.*f.member ? 1 : 0) << '\n';
     for (const auto& f : floats) out << f.key << '=' << value.*f.member << '\n';
     out << "; 0 = current Activate binding; other values = keyboard scan code (decimal)\nDismountKey=" << value.dismountKey << '\n';
@@ -60,7 +60,7 @@ void (*separator)(const char*){};
 void (__stdcall Render)() {
     static Data draft = Get();
     static std::string result;
-    text("NPC 坐骑 0.3.2 · 修改后点击保存并应用", nullptr);
+    text("NPC 坐骑 0.3.4 · 修改后点击保存并应用", nullptr);
     text("缩放与倍率作用于本 Mod 已转换的 NPC；下骑恢复玩家速度，B 还原 NPC 原值。", nullptr);
     for (const auto& f : bools) checkbox(f.label, &(draft.*f.member));
     separator("数值与座位");
