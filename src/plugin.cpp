@@ -10,6 +10,9 @@
 #include "Extras.h"
 #include "MovementCompat.h"
 #include "Crawl.h"
+#include "Travel.h"
+#include "Wardrobe.h"
+#include "RideCollision.h"
 
 namespace Mounts {
 constexpr auto plugin = "NPCMounts.esp";
@@ -32,12 +35,14 @@ RE::TESFaction* riderFaction{};
 RE::SpellItem* convertSpell{};
 RE::SpellItem* restoreSpell{};
 RE::EffectSetting* convertEffect{};
+RE::EffectSetting* undressEffect{};
 RE::EffectSetting* restoreEffect{};
 RE::ActorHandle ridden;
 std::uint32_t mountControllerFlags{}, playerControllerFlags{};
 bool firstPersonBefore{};
 float jumpTimer{}, landTimer{}, previousHeading{}, restoreRetry{};
 int rideGait{};
+Motion::RideState rideMotion;
 bool wasAir{};
 float rideLogTimer{};
 float lastNPCDrift{};
@@ -152,7 +157,8 @@ void RestoreController(RE::Actor* actor, RE::CHARACTER_FLAGS mask, std::uint32_t
 bool Ray(RE::bhkWorld* world, const RE::NiPoint3& from, const RE::NiPoint3& to, RE::bhkPickData& pick)
 {
     pick.rayInput.from = RE::hkVector4(from * RE::bhkWorld::GetWorldScale());
-    pick.rayInput.to = RE::hkVector4(to * RE::bhkWorld::GetWorldScale());
+    pick.rayInput.to = RE::hkVector4(0.f, 0.f, 0.f, 0.f);
+    pick.ray = RE::hkVector4((to - from) * RE::bhkWorld::GetWorldScale());
     pick.rayInput.filterInfo.SetCollisionLayer(RE::COL_LAYER::kCameraPick);
     RE::BSReadLockGuard lock(world->worldLock);
     world->PickObject(pick);
@@ -183,6 +189,7 @@ void ResetPose(RE::Actor* actor,State& state){
 }
 bool Dismount(bool emergency = false, bool = true)
 {
+    RideCollision::Clear();
     MovementCompat::End();
     auto mount = ridden.get();
     auto* player = RE::PlayerCharacter::GetSingleton();
@@ -197,7 +204,7 @@ bool Dismount(bool emergency = false, bool = true)
             player->NotifyAnimationGraph("IdleForceDefaultState");
             RestoreController(player, ridePhysics, playerControllerFlags);
         }
-        ridden.reset(); downActive=false; jumpTimer = landTimer = 0.f; rideGait = 0; wasAir = false;
+        ridden.reset(); downActive=false; jumpTimer = landTimer = 0.f; rideGait = 0; rideMotion = {}; wasAir = false;
         if (firstPersonBefore && !emergency) RE::PlayerCamera::GetSingleton()->ForceFirstPerson();
         return true;
     }
@@ -236,7 +243,7 @@ bool Dismount(bool emergency = false, bool = true)
         state->second.animation = 0;
         StopMotion(mount.get());
     }
-    ridden.reset(); downActive=false; jumpTimer = landTimer = 0.f; rideGait = 0; wasAir = false;
+    ridden.reset(); downActive=false; jumpTimer = landTimer = 0.f; rideGait = 0; rideMotion = {}; wasAir = false;
     if (firstPersonBefore && !emergency) RE::PlayerCamera::GetSingleton()->ForceFirstPerson();
     spdlog::info("Dismounted");
     return true;
@@ -303,6 +310,7 @@ bool Convert(RE::Actor* actor)
 }
 void Restore(RE::Actor* actor)
 {
+    if(actor)Travel::Forget(actor->GetFormID());
     if (!Converted(actor)) {Extras::Release(actor);return;}
     if(!ActorReady(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
     if(!Extras::Release(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
@@ -338,7 +346,7 @@ void RestoreAll()
 void Mount(RE::Actor* actor)
 {
     if(Restoring(actor)){RE::SendHUDMessage::ShowHUDMessage("目标仍在还原，等待牵引清理完成后再转换");return;}
-    if(Extras::Bound(actor)||Extras::Busy(actor)){RE::SendHUDMessage::ShowHUDMessage("请先施放人魅-解除坐骑化与束缚，或人魅-解除牵引");return;}
+    if(Extras::Bound(actor)||Extras::Busy(actor)){RE::SendHUDMessage::ShowHUDMessage("请先施放人魅-解除坐骑化与束缚，或用人魅-牵引坐骑解除绳索");return;}
     if (!Converted(actor) || actor->IsDead() || actor->IsInKillMove() || !actor->Get3D() || !actor->GetCharController()) return;
     auto* player = RE::PlayerCharacter::GetSingleton();
     auto* cc = player->GetCharController();
@@ -347,6 +355,8 @@ void Mount(RE::Actor* actor)
     if(!Seat::Bind(player)){RE::SendHUDMessage::ShowHUDMessage(Seat::BindError());return;}
     if(!MovementCompat::Begin()){Seat::Clear();RE::SendHUDMessage::ShowHUDMessage("方向移动框架暂未释放控制，请结束当前动作后重试");return;}
     ridden = actor->GetHandle();
+    RideCollision::Update(player,actor);
+    Travel::Remember(actor);
     mountControllerFlags = actor->GetCharController()->flags.underlying() & static_cast<std::uint32_t>(proxyPhysics);
     playerControllerFlags = cc->flags.underlying() & static_cast<std::uint32_t>(ridePhysics);
     firstPersonBefore = RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
@@ -366,12 +376,13 @@ void Mount(RE::Actor* actor)
     upActive=true;upElapsed=0;upDuration=config.mountSeconds;
     auto& flags=player->GetActorRuntimeData().boolFlags;downOriginalFlags=flags.underlying()&static_cast<std::uint32_t>(downFlags);flags.set(downFlags);
     Seat::Entering(true);Seat::Update(player,actor,config,1.f,upOffset);
-    rideGait = 0; previousHeading = player->GetAngleZ();
+    rideGait = 0; rideMotion = {}; previousHeading = player->GetAngleZ();
     rideLogTimer = lastNPCDrift = 0.f; rideSamples = rideTicks = npcUpdates = 0;
     spdlog::info("Mounted ref={:08X}", actor->GetFormID());
 }
 void Tick(RE::Actor* player, float delta)
 {
+    Travel::Tick(player,delta);
     if (RE::UI::GetSingleton()->GameIsPaused()) {dismountHold.Release();return;}
     config=Settings::Get();
     Extras::Tick(delta);
@@ -436,9 +447,11 @@ void Tick(RE::Actor* player, float delta)
     cc->GetLinearVelocityImpl(velocity);
     const float speed = std::hypot(velocity.quad.m128_f32[0], velocity.quad.m128_f32[1]) * RE::bhkWorld::GetWorldScaleInverse();
     const bool air = cc && (cc->context.currentState == RE::hkpCharacterStateType::kInAir || cc->context.currentState == RE::hkpCharacterStateType::kJumping);
+    const bool takeoff=air&&!wasAir&&jumpTimer>0.f&&velocity.quad.m128_f32[2]>0.f;
     if(air&&!wasAir&&jumpTimer>0.f&&velocity.quad.m128_f32[2]>0.f){
         velocity.quad.m128_f32[2]*=std::sqrt(config.jumpHeightMultiplier);
         cc->SetLinearVelocityImpl(velocity); // One takeoff impulse, not a per-frame multiplier.
+        jumpTimer=0.f; // Consume the accepted jump; contact flicker must not boost twice.
     }
     if (wasAir && !air) landTimer = 0.3f;
     wasAir = air;
@@ -447,20 +460,26 @@ void Tick(RE::Actor* player, float delta)
     const auto movement = RE::PlayerControls::GetSingleton()->data.moveInputVec;
     const float turn = std::remainder(player->GetAngleZ() - previousHeading, 2.f * std::numbers::pi_v<float>);
     previousHeading = player->GetAngleZ();
-    int animation = Motion::Choose(speed, movement.y, delta > 0.f ? turn / delta : 0.f, rideGait,config.runThreshold,config.sprintThreshold);
-    if (jumpTimer > 0.f || air) animation = 2; // Human crawling run while jumping.
+    const int animation = rideMotion.Update(speed,movement.x,movement.y,delta>0.f?turn / delta:0.f,
+        air,takeoff,delta,config.runThreshold,config.sprintThreshold);
     auto& state = targets.at(mount->GetFormID());
     SetMotion(mount.get(), state, animation);
     Crawl::Update(mount.get(),animation,delta);
     ++rideTicks;
     statusTimer-=delta;
     if(statusTimer<=0){Settings::Status(fmt::format("NPC {:08X} | scale {:.2f} | speed x{:.2f} | 速度 {:.1f} | 动作 {} | 座位输出 {}",mount->GetFormID(),mount->GetScale(),config.speedMultiplier,speed,animation,Seat::Working()?"已执行":"等待"));statusTimer=.5f;}
-    if (config.debugLog && rideSamples < 8) {
+    if (config.debugLog && rideSamples < 1200) {
         rideLogTimer -= delta;
         if (rideLogTimer <= 0.f) {
             const auto p = player->GetPosition();
             const auto m = mount->GetPosition();
             const auto r = mount->Get3D()->world.translate;
+            auto* back=mount->Get3D()->GetObjectByName("NPC Spine2 [Spn2]");
+            const auto b=back?back->world.translate:r;
+            const auto pr=player->Get3D()->world.translate;
+            spdlog::info("Ride detail ref={:08X} input=({:.3f},{:.3f}) yaw=({:.3f},{:.3f}) backRelative=({:.3f},{:.3f},{:.3f}) playerRootError=({:.3f},{:.3f},{:.3f}) controllerState={} playerFlags={:08X} seat={} scale={:.3f}",
+                mount->GetFormID(),movement.x,movement.y,player->GetAngleZ(),mount->GetAngleZ(),b.x-r.x,b.y-r.y,b.z-r.z,pr.x-p.x,pr.y-p.y,pr.z-p.z,
+                static_cast<unsigned>(cc->context.currentState),cc->flags.underlying(),Seat::Working(),mount->GetScale());
             spdlog::info("Ride sample={} ticks={} npcUpdates={} npcDrift={:.2f} player=({:.2f},{:.2f},{:.2f}) mount=({:.2f},{:.2f},{:.2f}) root=({:.2f},{:.2f},{:.2f}) speed={:.2f} rank={}/{} AI={} life={} proxy={:08X}",
                 ++rideSamples, rideTicks, npcUpdates,lastNPCDrift,p.x,p.y,p.z,m.x,m.y,m.z,r.x,r.y,r.z,speed,state.animation,mount->GetFactionRank(mountFaction,false),mount->IsAIEnabled(),
                 static_cast<unsigned>(mount->AsActorState()->GetLifeState()), mount->GetCharController()->flags.underlying());
@@ -474,16 +493,57 @@ void Tick(RE::Actor* player, float delta)
 using Update = void (*)(RE::Actor*, float);
 Update originalUpdate{};
 Update originalNPCUpdate{};
+void AuditMotionStage(RE::Actor* actor,const char* stage){
+    if(!config.debugLog||!ridden||rideSamples>=1200||rideLogTimer>0.02f)return;
+    auto* cc=actor->GetCharController();if(!cc)return;
+    RE::hkVector4 v;cc->GetLinearVelocityImpl(v);
+    auto* process=actor->GetActorRuntimeData().movementController.get();
+    if(actor->IsPlayerRef())spdlog::info("Ride collision groups={:016X} rejected={}",RideCollision::groups.load(std::memory_order_relaxed),RideCollision::rejected.load(std::memory_order_relaxed));
+    spdlog::info("Motion stage={} ref={:08X} velocity=({:.4f},{:.4f},{:.4f}) output=({:.4f},{:.4f},{:.4f}) push=({:.4f},{:.4f},{:.4f}) animationDriven={} allowRotation={} controllerMode={} controls={} ai={} contacts={}",
+        stage,actor->GetFormID(),v.quad.m128_f32[0],v.quad.m128_f32[1],v.quad.m128_f32[2],
+        cc->outVelocity.quad.m128_f32[0],cc->outVelocity.quad.m128_f32[1],cc->outVelocity.quad.m128_f32[2],
+        cc->pushDelta.quad.m128_f32[0],cc->pushDelta.quad.m128_f32[1],cc->pushDelta.quad.m128_f32[2],
+        actor->IsAnimationDriven(),actor->IsAllowRotation(),process?process->unk1C0:0,process?process->GetControlsDriven():false,process?process->GetAIDriven():false,cc->contactPointsCount);
+}
+// Observe only: never cancel or undo another system's teleport.
+void AuditLocation(RE::Actor* actor) {
+    struct Sample { RE::FormID cell; RE::NiPoint3 position; };
+    static std::unordered_map<RE::FormID,Sample> previous;
+    static decltype(Extras::Session()) epoch{};
+    static unsigned count=0;
+    if(epoch!=Extras::Session()){previous.clear();count=0;epoch=Extras::Session();}
+    if(!config.debugLog){previous.clear();return;}
+    const auto id=actor->GetFormID();
+    if(!Converted(actor)){previous.erase(id);return;}
+    auto* cell=actor->GetParentCell();if(!cell)return;
+    const Sample now{cell->GetFormID(),actor->GetPosition()};
+    auto old=previous.find(id);
+    if(old!=previous.end()&&count<2000){
+        const auto distance=(now.position-old->second.position).Length();
+        if(now.cell!=old->second.cell||distance>512.f){
+            ++count;
+            spdlog::info("Travel observed ref={:08X} cell={:08X}->{:08X} distance={:.2f} fixed={} leashed={} riding={} (observation, caller unknown)",
+                id,old->second.cell,now.cell,distance,Extras::Bound(actor),Extras::Leashed(actor),Riding(actor));
+        }
+    }
+    previous.insert_or_assign(id,now);
+}
 void PlayerUpdate(RE::Actor* player, float delta)
 {
+    auto currentMount=ridden.get();
+    RideCollision::Update(player,currentMount.get());
+    AuditMotionStage(player,"player-before");
     if(ridden&&!downActive)ReleaseAnimationMotion(player);
     originalUpdate(player, delta);
+    AuditMotionStage(player,"player-after");
     static bool reached = false;
     if (!reached) { spdlog::info("Player update hook reached"); reached = true; }
     Tick(player, delta);
 }
 void NPCUpdate(RE::Actor* actor, float delta)
 {
+    if(Riding(actor))AuditMotionStage(actor,"mount-before");
+    AuditLocation(actor);
     if(Extras::Leashed(actor))HoldPose(actor); // Release gates before LF/native movement, not one frame afterwards.
     // Supply the current transform before animation/model publication as well.
     if (auto mount = ridden.get(); mount.get() == actor && !RE::UI::GetSingleton()->GameIsPaused()) {
@@ -491,6 +551,7 @@ void NPCUpdate(RE::Actor* actor, float delta)
         if (!player->IsDead() && !actor->IsDead() && RideReady(actor,player)) SyncMount(actor, player);
     }
     originalNPCUpdate(actor, delta);
+    if(Riding(actor))AuditMotionStage(actor,"mount-after");
     Extras::AfterActorUpdate(actor);
     auto mount = ridden.get();
     if (mount.get() != actor || actor->IsDead() || !actor->Get3D() || RE::UI::GetSingleton()->GameIsPaused()) return;
@@ -595,7 +656,7 @@ bool BlockRideButton(RE::ButtonEvent* button)
 struct RideInput final : RE::BSTEventSink<RE::InputEvent*> {
     RE::BSEventNotifyControl ProcessEvent(RE::InputEvent* const* events, RE::BSTEventSource<RE::InputEvent*>*) override
     {
-        if (!events || (!ridden && suppressedButtons.empty()))
+        if (!events)
             return RE::BSEventNotifyControl::kContinue;
         const auto& contexts = RE::ControlMap::GetSingleton()->GetRuntimeData().contextPriorityStack;
         const bool gameplay = !RE::UI::GetSingleton()->GameIsPaused() &&
@@ -610,7 +671,10 @@ struct RideInput final : RE::BSTEventSink<RE::InputEvent*> {
                     button->GetDevice()==RE::INPUT_DEVICE::kKeyboard && button->GetIDCode()==static_cast<unsigned>(config.dismountKey);
                 if(ridden&&gameplay&&downKey){
                     if(button->IsDown()&&!downActive&&!upActive)dismountHold.Press();
-                    if(button->IsUp())dismountHold.Release();
+                    if(button->IsUp()){
+                        dismountHold.Release();
+                        suppressedButtons.erase((std::uint64_t(button->GetDevice())<<32)|button->GetIDCode());
+                    }
                     *link=event->next;continue;
                 }
                 const auto key = (std::uint64_t(button->GetDevice()) << 32) | button->GetIDCode();
@@ -645,20 +709,21 @@ struct Events final : RE::BSTEventSink<RE::TESMagicEffectApplyEvent>, RE::BSTEve
     {
         if (!event || !event->caster || !event->caster->IsPlayerRef()) return RE::BSEventNotifyControl::kContinue;
         const auto epoch=Extras::Session();
-        if(event->magicEffect!=convertEffect->GetFormID()&&event->magicEffect!=restoreEffect->GetFormID()){
+        if(event->magicEffect!=convertEffect->GetFormID()&&event->magicEffect!=restoreEffect->GetFormID()&&event->magicEffect!=undressEffect->GetFormID()){
             if(!Extras::Matches(event->magicEffect))return RE::BSEventNotifyControl::kContinue;
             auto* selected=event->target?event->target->As<RE::Actor>():nullptr;
             const auto handle=selected?selected->GetHandle():RE::ActorHandle{};const auto effect=event->magicEffect;
             SKSE::GetTaskInterface()->AddTask([handle,effect,epoch]{if(Extras::Session()!=epoch)return;auto target=handle.get();Extras::Handle(effect,target.get());});
             return RE::BSEventNotifyControl::kContinue;
         }
-        if (event->magicEffect == convertEffect->GetFormID()) {
+        if (event->magicEffect == convertEffect->GetFormID() || event->magicEffect==undressEffect->GetFormID()) {
             auto* actor = event->target ? event->target->As<RE::Actor>() : nullptr;
             auto handle = actor ? actor->GetHandle() : RE::ActorHandle{};
-            SKSE::GetTaskInterface()->AddTask([handle,epoch] {
+            const bool undress=event->magicEffect==undressEffect->GetFormID();
+            SKSE::GetTaskInterface()->AddTask([handle,epoch,undress] {
                 if(Extras::Session()!=epoch)return;
                 auto target = handle.get();
-                Convert(target.get());
+                if(Convert(target.get())&&undress)Wardrobe::Undress(target.get());
             });
         } else if (event->magicEffect == restoreEffect->GetFormID()) {
             auto* selected = Crosshair();
@@ -692,7 +757,7 @@ struct Events final : RE::BSTEventSink<RE::TESMagicEffectApplyEvent>, RE::BSTEve
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::TESFormDeleteEvent* event, RE::BSTEventSource<RE::TESFormDeleteEvent>*) override
     {
-        if (event) {Crawl::Remove(event->formID);targets.erase(event->formID);Extras::Deleted(event->formID);}
+        if (event) {Travel::Forget(event->formID);Crawl::Remove(event->formID);targets.erase(event->formID);Extras::Deleted(event->formID);}
         return RE::BSEventNotifyControl::kContinue;
     }
 } events;
@@ -712,11 +777,13 @@ void Save(SKSE::SerializationInterface* save)
         save->WriteRecordData(static_cast<std::uint32_t>(downActive||upActive));save->WriteRecordData(downOriginalFlags);
     }
     Extras::Save(save);
+    Travel::Save(save);
 }
 void Load(SKSE::SerializationInterface* save)
 {
     std::uint32_t type, version, length;
     while (save->GetNextRecordInfo(type, version, length)) {
+        if(Travel::Load(save,type,version,length))continue;
         if(Extras::Load(save,type,version,length))continue;
         if(type=='RIDE'&&version==1&&length==16){
             std::uint32_t active{};
@@ -747,7 +814,7 @@ void Load(SKSE::SerializationInterface* save)
         }
     }
 }
-void Revert(SKSE::SerializationInterface*) { Crawl::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;playerSpeedDelta=0; jumpTimer = landTimer = restoreRetry = 0.f; rideGait = 0; wasAir = false; }
+void Revert(SKSE::SerializationInterface*) { Travel::Revert();Crawl::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;playerSpeedDelta=0; jumpTimer = landTimer = restoreRetry = 0.f; rideGait = 0; rideMotion = {}; wasAir = false; }
 void Message(SKSE::MessagingInterface::Message* message)
 {
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
@@ -759,11 +826,14 @@ void Message(SKSE::MessagingInterface::Message* message)
         mountFaction = data->LookupForm<RE::TESFaction>(0x800, plugin);
         riderFaction = data->LookupForm<RE::TESFaction>(0x801, plugin);
         convertEffect = data->LookupForm<RE::EffectSetting>(0x802, plugin);
+        undressEffect = data->LookupForm<RE::EffectSetting>(0x822, plugin);
         restoreEffect = data->LookupForm<RE::EffectSetting>(0x803, plugin);
         convertSpell = data->LookupForm<RE::SpellItem>(0x804, plugin);
         restoreSpell = data->LookupForm<RE::SpellItem>(0x805, plugin);
-        if (!mountFaction || !riderFaction || !convertEffect || !restoreEffect || !convertSpell || !restoreSpell) { spdlog::error("NPCMounts.esp missing/incomplete; no hooks installed"); return; }
+        if (!mountFaction || !riderFaction || !convertEffect || !undressEffect || !restoreEffect || !convertSpell || !restoreSpell) { spdlog::error("NPCMounts.esp missing/incomplete; no hooks installed"); return; }
         Extras::Initialize();
+        Travel::Initialize();
+        RideCollision::Install();
         REL::Relocation<std::uintptr_t> player{RE::VTABLE_PlayerCharacter[0]};
         REL::Relocation<std::uintptr_t> npc{RE::VTABLE_Character[0]};
         REL::Relocation<std::uintptr_t> activate{RE::VTABLE_ActivateHandler[0]};
@@ -784,11 +854,19 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESObjectLoadedEvent>(&events);
         source->AddEventSink<RE::TESFormDeleteEvent>(&events);
         RegisterRideInput();
-        spdlog::info("Ready 0.4.0: native crawl output, mount transition, capture-anchor and jump height");
+        spdlog::info("Ready 0.4.2: toggle leash and clothing unequip conversion");
+        spdlog::info("Diagnostic build 20261016: bounded ride samples + converted actor relocation observations; shared configuration steps");
+        spdlog::info("Gait I compiled {} {}: input-gated locomotion, confirmed jump, stable transitions",__DATE__,__TIME__);
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
         if(message->type==SKSE::MessagingInterface::kPostLoadGame&&!message->data)return;
         auto* player = RE::PlayerCharacter::GetSingleton();
+        auto* data=RE::TESDataHandler::GetSingleton();
+        auto* legacy=data->LookupForm<RE::SpellItem>(0x80D,plugin);
+        auto* toggle=data->LookupForm<RE::SpellItem>(0x80C,plugin);
+        if(legacy&&toggle&&player->HasSpell(legacy)){
+            if(player->HasSpell(toggle)||player->AddSpell(toggle))player->RemoveSpell(legacy);
+        }
         if(loadedRideState){
             ApplySpeed(player,1.f,playerSpeedDelta);RestoreController(player,ridePhysics,playerControllerFlags&static_cast<std::uint32_t>(ridePhysics));
             if(downActive){auto& flags=player->GetActorRuntimeData().boolFlags;flags.reset(downFlags);flags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags&static_cast<std::uint32_t>(downFlags)));}
@@ -798,6 +876,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         // A-F are learned from BOOK records. Preserve spells already learned in old saves.
         player->RemoveFromFaction(riderFaction);
         Extras::PostLoad();
+        Travel::Initialize();
         std::vector<RE::FormID> ids;
         for (const auto& [id, state] : targets) ids.push_back(id);
         for (auto id : ids) if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(id)) {
@@ -821,6 +900,6 @@ SKSEPluginLoad(const SKSE::LoadInterface* skse)
         spdlog::default_logger()->flush_on(spdlog::level::info);
     }
     auto* save = SKSE::GetSerializationInterface();
-    save->SetUniqueID('NMNT'); save->SetSaveCallback(Mounts::Save); save->SetLoadCallback(Mounts::Load); save->SetRevertCallback(Mounts::Revert);
+    save->SetUniqueID('NMNT'); save->SetSaveCallback(Mounts::Save); save->SetLoadCallback(Mounts::Load); save->SetRevertCallback([](SKSE::SerializationInterface* s){RideCollision::Clear();Mounts::Revert(s);});
     return SKSE::GetMessagingInterface()->RegisterListener(Mounts::Message);
 }

@@ -170,7 +170,7 @@ void StartTether(RE::Actor* actor,bool anchor){
                 Call("SetLeashFollower",[](bool){},ref.get(),0);
                 Call("SetPreventOverstretchOverride",[](bool){},ref.get(),0);
             }
-            Notify(anchor?"坐骑已通过绳索连接固定桩":"已连接牵引绳；人魅-解除牵引可解除");
+            Notify(anchor?"坐骑已通过绳索连接固定桩":"已连接牵引绳；再次施放人魅-牵引坐骑可解除");
         };
         bool dispatched=false;
         if(anchor){
@@ -295,15 +295,21 @@ void Tick(float delta){
         if(it->second.phase==Phase::Active)CheckTether(actor);
     }
 }
+void ToggleTether(RE::Actor* actor,bool releaseOnly=false){
+    if(Busy(actor)){
+        auto& t=tethers.at(actor->GetFormID());t.anchorAfterDisconnect=false;
+        if(t.phase==Phase::Failed&&!t.pending&&!t.query){t.phase=Phase::Reconciling;t.failures=0;t.retry=0;}
+        if(t.anchor){Release(actor);return;}
+        StopTether(actor);return;
+    }
+    // A binding may outlive its asynchronous rope cleanup. Finish release, not a new rope.
+    if(Bound(actor)){Release(actor);return;}
+    if(releaseOnly)Notify("目标没有本Mod创建的牵引");else StartTether(actor);
+}
 bool Handle(RE::FormID effect,RE::Actor* actor){
     for(unsigned i=0;i<effects.size();++i)if(effects[i]&&effects[i]->GetFormID()==effect){
-        if(i==0)Bind(actor,false);else if(i==1)Bind(actor,true);else if(i==2)StartTether(actor);else if(Busy(actor)){
-            if(tethers.at(actor->GetFormID()).anchor){Release(actor);return true;}
-            auto& t=tethers.at(actor->GetFormID());
-            t.anchorAfterDisconnect=false;
-            if(t.phase==Phase::Failed&&!t.pending&&!t.query){t.phase=Phase::Reconciling;t.failures=0;t.retry=0;}
-            StopTether(actor);
-        }else Notify("目标没有本Mod创建的牵引");return true;
+        if(i==0)Bind(actor,false);else if(i==1)Bind(actor,true);else ToggleTether(actor,i==3);
+        return true;
     }return false;
 }
 bool Matches(RE::FormID effect){return std::any_of(effects.begin(),effects.end(),[effect](auto* item){return item&&item->GetFormID()==effect;});}

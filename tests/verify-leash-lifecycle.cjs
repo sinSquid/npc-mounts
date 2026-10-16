@@ -34,7 +34,7 @@ std::atomic_uint64_t leashEventsSeen{0},session{1};
 struct Pending {std::string name;std::function<void(bool)> callback;};std::deque<Pending> queue;
 void Notify(const char*){}bool Eligible(RE::Actor* a){return a!=nullptr;}bool Bound(RE::Actor* a){return a&&a->bound;}
 struct Binding{unsigned post=9;};bool Find(unsigned,Binding&){return true;}
-bool Release(RE::Actor* a){a->bound=false;return true;}
+unsigned releases=0;bool Release(RE::Actor* a){++releases;a->bound=false;return true;}
 unsigned anchorCalls=0;bool Bind(RE::Actor* a,bool pacify){assert(a&&!pacify);++anchorCalls;return true;}
 void StartTether(RE::Actor*,bool=false);
 ${take('bool Busy(')}
@@ -48,7 +48,12 @@ ${take('void StartTether(')}
 ${take('void CheckTether(')}
 ${take('void AdvanceTethers(')}
 ${take('void Unleashed(')}
+${take('void ToggleTether(')}
 int main(){RE::Actor actor;RE::known=&actor;
+ ToggleTether(nullptr);assert(tethers.empty()&&queue.empty());ToggleTether(&actor,true);assert(tethers.empty()&&queue.empty());
+ ToggleTether(&actor);assert(Busy(&actor));ToggleTether(&actor);assert(!tethers.at(1).wanted);Reply("IsLeashed",false);assert(!Busy(&actor));
+ ToggleTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",true);ToggleTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ actor.bound=true;auto releaseBefore=releases;ToggleTether(&actor);assert(releases==releaseBefore+1&&!actor.bound&&queue.empty());
  actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPosition",true);Reply("SetRagdollOverride",true);
  assert(Busy(&actor)&&!Leashed(&actor)&&tethers.at(1).anchor);CheckTether(&actor);Reply("IsLeashed",true);StopTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
  StartTether(&actor,true);Reply("IsLeashed",true);assert(!Busy(&actor)&&!actor.bound); // Foreign rope: rollback anchor, do not replace.

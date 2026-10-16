@@ -4,6 +4,8 @@ const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'s
 function take(sig){const start=source.indexOf(sig);assert(start>=0);let end=source.indexOf('{',start)+1,n=1;while(n){const c=source[end++];if(c==='{')n++;if(c==='}')n--;}return source.slice(start,end);}
 fs.writeFileSync(path.join(root,'build/queued-actions-regression.cpp'),`
 #include <cassert>
+#include "../src/Motion.h"
+Motion::RideState rideMotion;
 #include <functional>
 #include <vector>
 #include <unordered_map>
@@ -24,6 +26,7 @@ namespace Extras{unsigned epoch=1;unsigned Session(){return epoch;}void Revert()
 namespace Seat{void Clear(){}}
 namespace MovementCompat{void End(){}}
 namespace Crawl{void Clear(){}}
+namespace Travel{void Revert(){}}
 RE::Actor actor;RE::ActorHandle ridden;int mounts=0;bool converted=true;
 std::unordered_map<unsigned,int>targets;std::unordered_set<std::uint64_t>suppressedButtons;
 HoldGate dismountHold;bool downActive=false,loadedRideState=false,wasAir=false,upActive=false;float playerSpeedDelta=0,jumpTimer=0,landTimer=0,restoreRetry=0;int rideGait=0;

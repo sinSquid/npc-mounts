@@ -9,6 +9,7 @@ fs.writeFileSync(path.join(repo,'build/seat-regression.cpp'),`
 #include <vector>
 #include <memory>
 #include <cstring>
+#include <string_view>
 #include <fstream>
 #include <cassert>
 #include <cmath>
@@ -77,19 +78,32 @@ int main(int argc,char** argv){
   mn.spine=saddle?&wrong:&back;mn.saddle=saddle?&back:nullptr;
   Settings::Data cfg;cfg.seatHeight=12;cfg.seatForward=7;cfg.seatSide=-3;
   Update(&player,&mount,cfg,-1,{});assert(active);
-  const auto expected=mount.position+mn.world.rotate*(backLocal+RE::NiPoint3{-3,7,12})*ns;
-  near(player.position+pn.world.rotate*target*ps,expected);
+  const auto expected=back.world.translate+mn.world.rotate*RE::NiPoint3{-3,7,12}*ns;
+  near(pn.world.translate+pn.world.rotate*target*ps,expected);
   const auto rideTarget=target;RE::NiPoint3 exit{-72,21,0};
   std::array<RE::NiPoint3,bones>end;std::array<RE::NiMatrix3,bones>basis;World(animation.back().data(),end,basis);
-  const auto endTarget=end[5]+pn.world.rotate.Transpose()*exit/ps;
+  const auto endTarget=end[5]+pn.world.rotate.Transpose()*(player.position+exit-pn.world.translate)/ps;
   Update(&player,&mount,cfg,.5f,exit);near(target,(rideTarget+endTarget)*.5f);
-  Update(&player,&mount,cfg,1,exit);near(player.position+pn.world.rotate*target*ps,player.position+exit+pn.world.rotate*end[5]*ps);
+  Update(&player,&mount,cfg,1,exit);near(pn.world.translate+pn.world.rotate*target*ps,player.position+exit+pn.world.rotate*end[5]*ps);
   mn.saddle=mn.spine=nullptr;Update(&player,&mount,cfg,-1,{});assert(!active&&!wrote&&!finished);
   mn.spine=&back;Update(&player,&mount,cfg,-1,{});assert(active);
   pn.world.scale=std::numeric_limits<float>::quiet_NaN();Update(&player,&mount,cfg,-1,{});assert(!active);
  }
  active=true;
  entering=true;for(float p:{1.f,.5f,0.f}){progress=p;finished=false;GeneratePose(nullptr,context,nullptr,output,0);assert(finished==(p==0));}entering=false;
+ // Native locomotion pose can differ from the rider. Deform bones become the
+ // rider pose without replacing root/camera or extracted-motion track bytes.
+ {
+  const int size=bytes+sizeof(Pose);std::vector<std::byte> mixed(size);
+  std::memcpy(mixed.data(),buffer.data(),bytes);auto* mt=reinterpret_cast<RE::hkbGeneratorOutput::Tracks*>(mixed.data());mt->masterHeader.numBytes=size;
+  mt->trackHeaders[1]={1,1,static_cast<std::int16_t>(bytes),48,1,0,1,0};
+  Pose motion=animation[0][0];motion.t[0]=12;motion.t[1]=-7;std::memcpy(mixed.data()+bytes,&motion,sizeof(motion));
+  std::memcpy(mixed.data()+headerBytes,animation.back().data(),sizeof(animation[0]));
+  RE::hkbGeneratorOutput mo{mt};progress=-1;GeneratePose(nullptr,context,nullptr,mo,0);
+  assert(std::memcmp(mixed.data()+bytes,&motion,sizeof(motion))==0);
+  auto* actual=reinterpret_cast<Pose*>(mixed.data()+headerBytes);
+  for(unsigned i=0;i<bones;++i)if(i!=4){auto& expected=(i<4||std::string_view(names[i].data()).starts_with("Camera"))?animation.back()[i]:animation.front()[i];assert(std::memcmp(&actual[i],&expected,sizeof(Pose))==0);}
+ }
  // Dense track shape/size and binding checks must reject before touching memory.
  for(int scenario=0;scenario<8;scenario++){
   tracks->masterHeader={bytes,3,{}};h={99,99,headerBytes,48,1,0,1,0};
@@ -107,6 +121,6 @@ int main(int argc,char** argv){
   for(unsigned i=headerBytes+99*sizeof(Pose);i<extended.size();++i)assert(extended[i]==std::byte{0x5a});}
  graphs[0].count=99;wrote=false;auto unchanged=extended;GeneratePose(nullptr,context,nullptr,xo,0);assert(!wrote&&extended==unchanged);
  Clear();assert(!active&&!wrote&&!finished&&graphs.empty());
- std::puts("PASS: actual seat output math over scale 0.5-3 and player 0.65-1.5; 7 animation phases; only COM changed while riding; malformed/sparse/additive tracks rejected. Engine rendering untested.");
+ std::puts("PASS: native rider pose, locomotion motion bytes/root/camera preserved, scales/transitions/output bounds. Engine rendering untested.");
 }
 `);

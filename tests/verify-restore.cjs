@@ -81,6 +81,7 @@ std::unordered_map<RE::FormID,State> targets;
 void* mountFaction{};
 struct { std::shared_ptr<RE::Actor> value;auto get(){return value;}explicit operator bool()const{return bool(value);} } ridden;
 namespace Crawl{void Remove(unsigned){}}
+namespace Travel{void Forget(unsigned){}void Save(SKSE::SerializationInterface*){}bool Load(SKSE::SerializationInterface*,unsigned,unsigned,unsigned){return false;}}
 Settings::Data config;float playerSpeedDelta=0;std::uint32_t playerControllerFlags=0,downOriginalFlags=0;bool downActive=false,loadedRideState=false,upActive=false;
 bool allowDismount=true;int dismountCalls{};
 int downRequests=0;void BeginDismount(){++downRequests;}

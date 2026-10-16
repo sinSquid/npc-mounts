@@ -191,14 +191,14 @@ def is_additive(prefix,filename):
  return aliasBindings.get(prefix+filename,aliasBindings.get(filename,aliasBindings.get('female/'+filename,0)))==1
 for rank,(name,_) in sources.items():
  folder=OAR/f'{rank:02d}-{name}';folder.mkdir(exist_ok=True)
- cfg=dict(name=name,priority=2147483630+rank,interruptible=True,hasCustomBlendTimeOnInterrupt=True,blendTimeOnInterrupt=0.12,conditions=[dict(condition='FactionRank',requiredVersion='1.0.0',Faction=form(0x800),Comparison='==',**{'Numeric value':{'value':rank}})])
+ cfg=dict(name=name,disabled=True,priority=2147483630+rank,interruptible=True,hasCustomBlendTimeOnInterrupt=True,blendTimeOnInterrupt=0.12,conditions=[dict(condition='FactionRank',requiredVersion='1.0.0',Faction=form(0x800),Comparison='==',**{'Numeric value':{'value':rank}})])
  (folder/'config.json').write_text(json.dumps(cfg,indent=2))
  for filename in aliases:
   for prefix in ['', 'female/']:
    target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
    target.write_bytes((neutralFile if is_additive(prefix,filename) else clips[rank]).read_bytes())
 folder=OAR/'rider';folder.mkdir(exist_ok=True)
-(folder/'config.json').write_text(json.dumps(dict(name='rider',priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
+(folder/'config.json').write_text(json.dumps(dict(name='rider',disabled=True,priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
 for filename in aliases:
  for prefix in ['', 'female/']:
   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)

@@ -6,6 +6,9 @@ let end=source.indexOf('{',start)+1,depth=1;
 while(depth){const c=source[end++];if(c==='{')depth++;if(c==='}')depth--;}
 const code=`
 #include <cassert>
+#include "../src/Motion.h"
+Motion::RideState rideMotion;
+namespace RideCollision {void Clear(){}}
 #include <cmath>
 #include <cstdio>
 #include <cstdint>

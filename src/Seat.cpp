@@ -79,7 +79,12 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
         track.dataOffset<begin || track.dataOffset>header.numBytes || track.numData*sizeof(Pose)>header.numBytes-track.dataOffset)return;
     auto* outputPose=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
     std::array<Pose,bones> pose;std::memcpy(pose.data(),outputPose,bytes);
-    if(phase>=0)Sample(phase,pose.data());
+    // Keep native clip timing/extracted motion. Only the rendered human pose
+    // is replaced; locomotion must not be replaced by a nine-second idle clip.
+    auto nativePose=pose;
+    if(phase>=0)Sample(phase,pose.data());else pose=animation.front();
+    for(unsigned i=0;i<bones;++i)
+        if(i<4||std::string_view(names[i].data()).starts_with("Camera"))pose[i]=nativePose[i];
     std::array<RE::NiPoint3,bones> positions;std::array<RE::NiMatrix3,bones> basis;
     World(pose.data(),positions,basis);
     // Only local animation output is changed, before skeleton/SMP publication.
@@ -89,8 +94,7 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     if(!Inverse(basis[parents[4]],inverse))return;
     const auto correction=inverse*(desired-positions[5]);
     pose[4].t[0]+=correction.x;pose[4].t[1]+=correction.y;pose[4].t[2]+=correction.z;
-    if(phase>=0)std::memcpy(outputPose,pose.data(),bytes);
-    else std::memcpy(outputPose+4*sizeof(Pose),&pose[4],sizeof(Pose));
+    std::memcpy(outputPose,pose.data(),bytes);
     wrote.store(true,std::memory_order_relaxed);
     if(entering?phase==0.f:phase>=1.f)finished.store(true,std::memory_order_release);
 }
@@ -142,16 +146,15 @@ void Update(RE::Actor* player,RE::Actor* mount,const Settings::Data& config,floa
     auto* p=player->Get3D();auto* m=mount->Get3D();
     if(!p||!m||!std::isfinite(p->world.scale)||!std::isfinite(m->world.scale)||p->world.scale<=0||m->world.scale<=0){suspend();return;}
     auto* back=m->GetObjectByName("SaddleBone");if(!back)back=m->GetObjectByName("NPC Spine2 [Spn2]");if(!back){suspend();return;}
-    // Use the bone's current model-space location, with reference positions to
-    // avoid feeding one-frame render-root lag back into the seat target.
-    const auto backRelative=back->world.translate-m->world.translate;
+    // Anchor to the published back, not a hypothetical back at the reference
+    // position. Physics/reference and rendered roots can differ while moving.
     const auto offset=m->world.rotate*RE::NiPoint3{config.seatSide,config.seatForward,config.seatHeight}*m->world.scale;
-    auto world=mount->GetPosition()-player->GetPosition()+backRelative+offset;
+    auto world=back->world.translate-p->world.translate+offset;
     auto desired=p->world.rotate.Transpose()*world/p->world.scale;
     if(phase>=0){
         std::array<RE::NiPoint3,bones> end;std::array<RE::NiMatrix3,bones> basis;World(animation.back().data(),end,basis);
         const float t=std::clamp(phase,0.f,1.f),blend=t*t*(3-2*t);
-        const auto endPosition=end[5]+p->world.rotate.Transpose()*exitOffset/p->world.scale;
+        const auto endPosition=end[5]+p->world.rotate.Transpose()*(player->GetPosition()+exitOffset-p->world.translate)/p->world.scale;
         desired=desired*(1-blend)+endPosition*blend;
     }
     if(!std::isfinite(desired.x)||!std::isfinite(desired.y)||!std::isfinite(desired.z)){suspend();return;}

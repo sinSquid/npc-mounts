@@ -19,6 +19,7 @@ int main(){
  cfg.seatHeight=std::numeric_limits<float>::quiet_NaN();Settings::Normalize(cfg);
  assert(cfg.npcScale==3&&cfg.speedMultiplier==1&&cfg.holdSeconds==.25f&&cfg.sprintThreshold==620&&cfg.seatHeight==12);
  cfg.overrideScale=true;cfg.npcScale=.51234567f;cfg.speedMultiplier=1.2345678f;cfg.dismountKey=18;
+ Settings::Normalize(cfg);assert(cfg.npcScale==.5f&&cfg.speedMultiplier==1.25f);
  assert(Settings::Write("build/config-roundtrip.ini",cfg));auto loaded=Settings::Read("build/config-roundtrip.ini");
  for(auto f:Settings::floats)assert(cfg.*f.member==loaded.*f.member);
  for(auto f:Settings::bools)assert(cfg.*f.member==loaded.*f.member);
@@ -29,6 +30,8 @@ int main(){
  {std::ofstream f("build/config-invalid.ini");f<<"[Mounts]\\nNPCScale=nan\\nSpeedMultiplier=9\\nDismountHoldSeconds=-4\\nDismountKey=999999999999\\nAllowJump=garbage\\n";}
  loaded=Settings::Read("build/config-invalid.ini");assert(loaded.npcScale==1&&loaded.speedMultiplier==2&&loaded.holdSeconds==.25f&&loaded.dismountKey==255&&loaded.allowJump);
  assert(!Settings::Write("missing-config-dir/no.ini",cfg));
+ for(auto f:Settings::floats){assert(f.step>=.05f);for(int i=0;i<=1000;i++){float input=f.min+(f.max-f.min)*i/1000.f;float snapped=Settings::Snap(input,f);assert(snapped>=f.min&&snapped<=f.max);assert(Settings::Snap(snapped,f)==snapped);float grid=(snapped-f.min)/f.step;assert(std::abs(grid-std::round(grid))<.001f);}assert(Settings::Snap(f.min,f)==f.min&&Settings::Snap(f.max,f)==f.max);}
+ Settings::Data originalDefaults;auto snappedDefaults=originalDefaults;Settings::Normalize(snappedDefaults);for(auto f:Settings::floats)assert(originalDefaults.*f.member==snappedDefaults.*f.member);
  for(float v:{-1.f,.8f,.84f,.86f,1.24f,1.26f,2.f,9.f}){cfg.jumpHeightMultiplier=v;Settings::Normalize(cfg);assert(cfg.jumpHeightMultiplier>=.8f&&cfg.jumpHeightMultiplier<=2.f);assert(std::abs(cfg.jumpHeightMultiplier*10-std::round(cfg.jumpHeightMultiplier*10))<.0001f);assert(Settings::Write("build/config-roundtrip.ini",cfg));assert(Settings::Read("build/config-roundtrip.ini").jumpHeightMultiplier==cfg.jumpHeightMultiplier);}
  std::puts("PASS: actual INI read/write/limits, NaN/invalid values, strict hold threshold, release/reset and 30/60/144 FPS.");
 }

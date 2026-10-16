@@ -120,7 +120,12 @@ void Update(RE::Actor* actor,int gait,float delta){
     bool bind=false;{std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());bind=it==actors.end()||it->second.root!=actor->Get3D();}
     if(bind&&!Bind(actor))return;
     std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());
-    gait=std::clamp(gait,0,6);if(state.gait!=gait){state.gait=gait;state.time=0;}
+    gait=std::clamp(gait,0,6);if(state.gait!=gait){
+        // Walk/run/sprint share a cycle. Carry phase instead of restarting frame zero.
+        const bool forwardCycle=state.gait>=1&&state.gait<=3&&gait>=1&&gait<=3;
+        state.time=forwardCycle?state.time/clips[state.gait].duration*clips[gait].duration:0.f;
+        state.gait=gait;
+    }
     state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[gait].duration);
     Frame next;Sample(clips[gait],state.time,next);
     // Frame-rate independent short blend; no scene-node interpolation or teleport.
