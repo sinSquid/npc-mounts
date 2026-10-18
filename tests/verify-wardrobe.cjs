@@ -1,6 +1,7 @@
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const repo=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(repo,'src/Wardrobe.cpp'),'utf8');
 assert(source.includes('void Capture(RE::Actor* actor,bool clothing)'));
+assert(source.indexOf('snapshot.drawn=actor->AsActorState()->IsWeaponDrawn()')<source.indexOf('for(bool left:{true,false})'),'drawn state must be captured before hands are unequipped');
 assert(source.includes('GetEquippedObject(left)')&&source.includes('selectedSpells[')&&source.includes('InterruptCast(false)'));
 assert(source.includes('if(accepted){Item saved')&&source.includes('ExtraUniqueID'));
 assert(source.includes('void Restore(RE::Actor* actor)')&&source.includes('EquipSpell(actor,spell,slot)')&&source.includes('EquipObject(actor,armor,Instance(actor,item)'));

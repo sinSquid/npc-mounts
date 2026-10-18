@@ -26,7 +26,7 @@ namespace RE{
 struct NiPoint3{float x,y,z;};
 using FormID=unsigned;template<class T>using BSTSmartPointer=std::shared_ptr<T>;struct NiAVObject{};
 struct Bone{std::string name;};struct Skeleton{std::vector<Bone>bones;std::vector<int>parentIndices;};struct Setup{std::shared_ptr<Skeleton>animationSkeleton;};struct Character{std::shared_ptr<Setup>setup;};struct BShkbAnimationGraph{Character characterInstance;};struct BSAnimationGraphManager{std::vector<std::shared_ptr<BShkbAnimationGraph>>graphs;};
-struct Actor{unsigned id=1;bool swimming=false;NiAVObject root;std::shared_ptr<BSAnimationGraphManager>manager=std::make_shared<BSAnimationGraphManager>();unsigned GetFormID(){return id;}NiAVObject* Get3D(){return &root;}Actor* AsActorState(){return this;}bool IsSwimming(){return swimming;}bool GetAnimationGraphManager(std::shared_ptr<BSAnimationGraphManager>& out){out=manager;return true;}};
+struct Actor{unsigned id=1;NiAVObject root;std::shared_ptr<BSAnimationGraphManager>manager=std::make_shared<BSAnimationGraphManager>();unsigned GetFormID(){return id;}NiAVObject* Get3D(){return &root;}bool GetAnimationGraphManager(std::shared_ptr<BSAnimationGraphManager>& out){out=manager;return true;}};
 struct hkbGenerator{};struct hkbContext{Character* character;};struct hkbGeneratorOutput{struct Master{int numBytes,numTracks;std::uint8_t unused[8];};struct Header{std::int16_t capacity,numData,dataOffset,elementSizeBytes;float onFraction;std::int8_t flags,type;std::uint16_t pad;};struct Tracks{Master masterHeader;Header trackHeaders[1];};Tracks* tracks;};}
 namespace spdlog{template<class...T>void warn(const char*,T...){}template<class...T>void info(const char*,T...){}}
 ${globals}
@@ -60,16 +60,19 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
  RE::Actor a;auto g=std::make_shared<RE::BShkbAnimationGraph>();g->characterInstance.setup=std::make_shared<RE::Setup>();auto sk=std::make_shared<RE::Skeleton>();g->characterInstance.setup->animationSkeleton=sk;a.manager->graphs.push_back(g);
  for(unsigned i=0;i<count;i++){sk->bones.push_back({i<99?names[i].data():"Custom"+std::to_string(i)});sk->parentIndices.push_back(i<99?parents[i]:0);}
  for(auto& bone:sk->bones)if(bone.name=="NPC LookNode [Look]")bone.name="x_NPC LookNode [Look]";
- assert(Bind(&a));actors.at(1).gait=1;actors.at(1).time=.25f;a.swimming=true;Update(&a,1,0);assert(actors.at(1).swimming&&std::abs(actors.at(1).time-.25f)<1e-6f);a.swimming=false;Update(&a,1,0);assert(!actors.at(1).swimming&&std::abs(actors.at(1).time-.25f)<1e-6f);
+ assert(Bind(&a));actors.at(1).gait=1;actors.at(1).time=.25f;Update(&a,1,0);assert(std::abs(actors.at(1).time-.25f)<1e-6f);
  auto water=std::make_shared<RE::BShkbAnimationGraph>();water->characterInstance.setup=g->characterInstance.setup;a.manager->graphs.push_back(water);Update(&a,1,0);assert(actors.at(1).graphs.size()==2&&actors.at(1).graphStamp.size()==2);a.manager->graphs.erase(a.manager->graphs.begin());Update(&a,1,0);assert(actors.at(1).graphs.size()==1&&actors.at(1).graphStamp.size()==1);g=water;
  for(float fps:{30.f,60.f,144.f})for(int gait=0;gait<7;gait++){for(int i=0;i<int(fps*2);i++)Update(&a,gait,1/fps);for(auto& p:actors.at(1).pose){float norm=0;for(float v:p.q){assert(std::isfinite(v));norm+=v*v;}assert(std::abs(norm-1)<.0001f);}}
  for(int old:{1,2,3})for(int next:{1,2,3}){auto& st=actors.at(1);st.gait=old;st.time=clips[old].duration*.37f;Update(&a,next,0);assert(std::abs(st.time/clips[next].duration-.37f)<.00001f);}
  Update(&a,0,0);assert(actors.at(1).time==0);Update(&a,1,0);assert(actors.at(1).time==0);Update(&a,4,0);assert(actors.at(1).time==0);
  RE::NiPoint3 anchor;assert(Anchor(&a,anchor,0));unsigned spine=0;for(unsigned i=0;i<bones;++i)if(std::string_view(names[i].data())=="NPC Spine2 [Spn2]")spine=i;
- auto model=PosePoint(actors.at(1).pose,parents,spine),rest=PosePoint(clips[0].frames.front(),parents,spine);
+ auto rest=PosePoint(clips[0].frames.front(),parents,spine);
  assert(std::abs(anchor.x)<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
- actors.at(1).pose[spine].t[0]+=500;actors.at(1).pose[spine].t[1]-=300;actors.at(1).pose[spine].t[2]+=200;assert(Anchor(&a,anchor,1));
- assert(std::abs(anchor.x)<1e-5&&std::abs(anchor.y-rest[1])<=1.501f&&anchor.z-rest[2]>=-2.401f&&anchor.z-rest[2]<=3.301f);
+ for(int gait=0;gait<7;++gait){
+  actors.at(1).gait=gait;actors.at(1).time=clips[gait].duration*.25f;assert(Anchor(&a,anchor,1));
+  assert(std::abs(anchor.x)<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
+  actors.at(1).time=clips[gait].duration*.75f;assert(Anchor(&a,anchor,.5f));assert(std::abs(anchor.z-rest[2])<1e-5);
+ }
  const unsigned header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes,std::byte{0x33});auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};auto before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);assert(memcmp(b.data()+64+sizeof(Frame),before.data()+64+sizeof(Frame),(count-99)*sizeof(Pose))==0);
  assert(Bind(&a,false));before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(b==before&&!actors.at(1).publish);
  Resume(&a);assert(actors.at(1).publish);GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);
@@ -79,5 +82,5 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
   for(unsigned i=0;i<bones;++i)if(OverlayBone(names[i].data())){sk->bones.push_back({names[i].data()});sk->parentIndices.push_back(sk->parentIndices.empty()?-1:0);}
   assert(sk->bones.size()>=15&&sk->bones.size()<99);assert(BindBound(&giant));UpdateBound(&giant,.016f);assert(actors.at(2).bound&&actors.at(2).gait==int(boundClip));
   const unsigned count=static_cast<unsigned>(sk->bones.size()),header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes);auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};GeneratePose(nullptr,ctx,nullptr,out,0);assert(actors.at(2).wrote);Remove(2);}
- Clear();assert(actors.empty()&&retries.empty());std::puts("PASS: real 8-clip bank; bounded seat sway, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}
+ Clear();assert(actors.empty()&&retries.empty());std::puts("PASS: real 8-clip bank; stable centreline anchor without duplicate rider bob, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}
 `);

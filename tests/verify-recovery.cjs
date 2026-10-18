@@ -18,8 +18,8 @@ assert(!source.includes('flags.set(proxyPhysics)'));
 assert(source.includes('cc->GetLinearVelocityImpl(velocity)'));
 assert(source.includes('RE::bhkWorld::GetWorldScaleInverse()'));
 assert(source.includes('turn / delta'));
-assert(source.includes('actor->EnableAI(saved.aiEnabled)'));
-assert(source.includes('actor->SetLifeState(saved.lifeState)'));
+assert(source.includes('actor->EnableAI(aiEnabled)'));
+assert(source.includes('actor->SetLifeState(originalLifeState)'));
 assert(source.includes("save->OpenRecord('NMNT', 5)"));
 assert(source.includes('else if (!hadTarget)'));
 const code = `

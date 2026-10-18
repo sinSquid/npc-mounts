@@ -24,13 +24,13 @@ RE::ExtraDataList* Instance(RE::Actor* actor,const Item& saved){
 void Capture(RE::Actor* actor,bool clothing){
     auto* equip=RE::ActorEquipManager::GetSingleton();if(!equip)return;
     Snapshot snapshot;
+    snapshot.drawn=actor->AsActorState()->IsWeaponDrawn();
     for(bool left:{true,false})if(auto* form=actor->GetEquippedObject(left)){
         (left?snapshot.left:snapshot.right)=form->GetFormID();
         auto* slot=RE::TESForm::LookupByID<RE::BGSEquipSlot>(left?0x13F43:0x13F42);
         if(auto* object=form->As<RE::TESBoundObject>())equip->UnequipObject(actor,object,nullptr,1,slot,false,false,false,true);
         else actor->GetActorRuntimeData().selectedSpells[left?RE::Actor::SlotTypes::kLeftHand:RE::Actor::SlotTypes::kRightHand]=nullptr;
     }
-    snapshot.drawn=actor->AsActorState()->IsWeaponDrawn();
     actor->InterruptCast(false);actor->DrawWeaponMagicHands(false);
     if(!clothing){std::scoped_lock lock(mutex);snapshots.insert_or_assign(actor->GetFormID(),std::move(snapshot));return;}
     // Clothing/armor regions; preserve hair/head adornments, jewelry, weapons,

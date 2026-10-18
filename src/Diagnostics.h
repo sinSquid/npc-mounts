@@ -23,10 +23,6 @@ template<class... Args> void Trace(fmt::format_string<Args...> format,Args&&... 
 }
 template<class... Args> void Motion(fmt::format_string<Args...> format,Args&&... args){if(spdlog::default_logger()->should_log(spdlog::level::debug))spdlog::debug(format,std::forward<Args>(args)...);}
 inline void Flush(){spdlog::default_logger()->flush();}
-struct Gate {
-    std::uint64_t next=0;
-    bool Allow(std::uint64_t now,std::uint64_t interval){if(now<next)return false;next=now+interval;return true;}
-};
 inline bool Sample(unsigned slot,std::uint64_t interval=500){
     static std::array<std::atomic_uint64_t,6> gates{};
     const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();

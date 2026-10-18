@@ -16,7 +16,7 @@ std::array<std::array<char,64>,bones> names;
 std::array<std::int16_t,bones> parents;
 struct Graph{RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count{};std::array<unsigned,bones> map;};
 struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
-struct ActorPose{const RE::NiAVObject* root{};std::vector<Graph> graphs;std::vector<GraphStamp> graphStamp;Frame pose;int gait=0;float time=0;bool wrote=false;bool publish=true;bool swimming=false;bool bound=false;};
+struct ActorPose{const RE::NiAVObject* root{};std::vector<Graph> graphs;std::vector<GraphStamp> graphStamp;Frame pose{};int gait=0;float time=0;bool wrote=false;bool publish=true;bool bound=false;};
 std::unordered_map<RE::FormID,ActorPose> actors;
 struct Retry{const RE::NiAVObject* root{};float remaining=0;};
 std::unordered_map<RE::FormID,Retry> retries;
@@ -132,7 +132,7 @@ bool Matches(const RE::BSAnimationGraphManager& manager,const std::vector<GraphS
 bool BindMode(RE::Actor* actor,bool publish,bool bound){
     if(!actor||!loaded)return false;
     ActorPose result;result.root=actor->Get3D();result.pose=clips[bound?boundClip:0].frames.front();result.gait=bound?boundClip:0;
-    result.publish=publish;result.swimming=actor->AsActorState()->IsSwimming();result.bound=bound;
+    result.publish=publish;result.bound=bound;
     RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;
     if(!result.root||!actor->GetAnimationGraphManager(manager)||!manager)return false;
     result.graphStamp=Snapshot(*manager);
@@ -180,7 +180,7 @@ void Update(RE::Actor* actor,int gait,float delta){
         bind=it==actors.end()||it->second.bound||it->second.root!=actor->Get3D()||!manager||!Matches(*manager,it->second.graphStamp);
     }
     if(bind&&!Bind(actor))return;
-    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.swimming=actor->AsActorState()->IsSwimming();
+    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());
     gait=std::clamp(gait,0,6);if(state.gait!=gait){
         // Walk/run/sprint share a cycle. Carry phase instead of restarting frame zero.
         const bool forwardCycle=state.gait>=1&&state.gait<=3&&gait>=1&&gait<=3;
@@ -200,7 +200,7 @@ void UpdateBound(RE::Actor* actor,float delta){
         bind=it==actors.end()||!it->second.bound||it->second.root!=actor->Get3D()||!manager||!Matches(*manager,it->second.graphStamp);
     }
     if(bind&&!BindBound(actor))return;
-    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.swimming=actor->AsActorState()->IsSwimming();state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[boundClip].duration);
+    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[boundClip].duration);
     Frame next;Sample(clips[boundClip],state.time,next);Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
 }
 bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway){
@@ -209,23 +209,11 @@ bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway){
     const auto it=actors.find(actor->GetFormID());
     if(it==actors.end()||it->second.root!=actor->Get3D())return false;
     for(unsigned i=0;i<bones;++i)if(std::string_view(names[i].data())=="NPC Spine2 [Spn2]"){
-        const auto current=PosePoint(it->second.pose,parents,static_cast<int>(i));
         const auto rest=PosePoint(clips[0].frames.front(),parents,static_cast<int>(i));
-        const auto relative=[](const Frame& frame,int bone){
-            std::array<float,3> p{};for(int n=bone;n>=5;n=parents[n]){
-                const auto& b=frame[n];const float x=b.q[0],y=b.q[1],z=b.q[2],w=b.q[3];const float px=p[0]*b.s[0],py=p[1]*b.s[1],pz=p[2]*b.s[2];
-                p={b.t[0]+(1-2*(y*y+z*z))*px+2*(x*y-z*w)*py+2*(x*z+y*w)*pz,
-                   b.t[1]+2*(x*y+z*w)*px+(1-2*(x*x+z*z))*py+2*(y*z-x*w)*pz,
-                   b.t[2]+2*(x*z-y*w)*px+2*(y*z+x*w)*py+(1-2*(x*x+y*y))*pz};
-            }return p;
-        };
-        const auto currentRelative=relative(it->second.pose,static_cast<int>(i)),restRelative=relative(clips[0].frames.front(),static_cast<int>(i));
-        const float amount=std::clamp(sway,0.f,1.f);
-        // Phantom Horse keeps rider COM X exactly on the mount centreline.
-        // Use the crawl cycle only as the bob phase; never turn it into lateral drift.
-        point={0.f,
-               rest[1]+std::clamp(currentRelative[1]-restRelative[1],-1.5f,1.5f)*amount,
-               rest[2]+std::clamp(currentRelative[2]-restRelative[2],-2.4f,3.3f)*amount};return true;
+        (void)sway;
+        // The mount centreline is authoritative. Rider motion is authored by the
+        // dedicated Phantom Horse clip in Seat, never by a second sine wave here.
+        point={0.f,rest[1],rest[2]};return true;
     }
     return false;
 }

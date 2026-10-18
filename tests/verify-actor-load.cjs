@@ -24,7 +24,7 @@ namespace SKSE {struct Tasks{std::vector<std::function<void()>>queue;void AddTas
 struct State{bool restoreRequested=false;int animation=3;bool posePending=false;};std::unordered_map<unsigned,State>targets{{1,{}}};int mountFaction=0,restores=0;
 void Restore(RE::Actor*){++restores;targets.erase(1);}void HoldPose(RE::Actor* a){++a->mutations;}void StopMotion(RE::Actor* a){++a->mutations;}
 ${source.slice(resetStart,resetEnd)}
-void RetryPose(){auto* actor=&RE::actor;const auto& state=targets.at(1);const unsigned id=1;
+void RetryPose(){auto* actor=&RE::actor;auto& state=targets.at(1);const unsigned id=1;
 ${source.slice(retryStart,retryEnd)}
 }
 struct Base{virtual RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent*,RE::BSTEventSource<RE::TESObjectLoadedEvent>*)=0;};

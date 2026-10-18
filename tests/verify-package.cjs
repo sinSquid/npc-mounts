@@ -27,27 +27,27 @@ function files(root){return fs.readdirSync(root,{withFileTypes:true}).flatMap(e=
 const animationReport=JSON.parse(fs.readFileSync(path.join(repo,'reports/animations.json'))),hashes=new Set(animationReport.clips.map(x=>x.sha256));
 assert.equal(animationReport.clips.length,18);assert(animationReport.clips.every(x=>x.tracks===99&&x.sdkDecode));
 const all=files(dist),legacyAnimations=files(path.join(dist,'meshes/actors/character/animations/OpenAnimationReplacer/NPCMounts'));
-const jsons=legacyAnimations.filter(f=>path.basename(f)==='config.json');assert.equal(jsons.length,12);
-const ranks=new Set();let hkx=0;
+const jsons=legacyAnimations.filter(f=>path.basename(f)==='config.json');assert.equal(jsons.length,2);
+let hkx=0;
 for(const filename of legacyAnimations){
  if(filename.endsWith('.hkx')){const b=fs.readFileSync(filename);assert.equal(b[16],8);assert(hashes.has(crypto.createHash('sha256').update(b).digest('hex')));hkx++;}
  if(filename.endsWith('config.json')){
   const cfg=JSON.parse(fs.readFileSync(filename));if(!cfg.conditions)continue;
   const c=cfg.conditions[0];
-  assert.equal(cfg.disabled,c.condition!=='IsInFaction','NPC locomotion aliases stay disabled; the scoped rider layer must replace human locomotion/jump clips');
+  assert.equal(path.basename(path.dirname(filename)),'rider');assert.equal(cfg.disabled,false,'The verified rider layer must stay active');
   assert(cfg.interruptible);assert(cfg.priority<2147483647);
   assert.equal(c.Faction.pluginName,'NPCMounts.esp');
-  if(c.condition==='FactionRank'){assert.equal(c.Comparison,'==');assert.equal(c.Faction.formID,'800');ranks.add(c['Numeric value'].value);}
-  else{assert.equal(c.condition,'IsInFaction');assert.equal(c.Faction.formID,'801');}
+  assert.equal(c.condition,'IsInFaction');assert.equal(c.Faction.formID,'801');
  }
 }
-assert.deepEqual([...ranks].sort((a,b)=>a-b),[0,1,2,3,4,5,6,7,8,9]);
-assert.equal(hkx,animationReport.aliases.length*22);
-for(let actorRank=-1;actorRank<=9;actorRank++)assert.equal([...ranks].filter(r=>r===actorRank).length,actorRank<0?0:1);
+assert.equal(hkx,animationReport.aliases.length*2);
 assert(fs.statSync(path.join(dist,'SKSE/Plugins/NPCMounts.dll')).size>100000);
 const motion=fs.readFileSync(path.join(dist,'SKSE/Plugins/NPCMounts/Dismount.nmp'));
 assert.deepEqual([0,4,8,12].map(i=>motion.readUInt32LE(i)),[0x504d504e,1,99,31]);
 assert.equal(motion.length,16+99*64+99*2+31*99*48);
+const rider=fs.readFileSync(path.join(dist,'SKSE/Plugins/NPCMounts/Rider.nmr'));
+assert.deepEqual([0,4,8,12].map(i=>rider.readUInt32LE(i)),[0x524d504e,1,99,13]);
+assert(rider.readFloatLE(16)>0);assert.equal(rider.length,20+99*64+99*2+13*99*48);
 const crawl=fs.readFileSync(path.join(dist,'SKSE/Plugins/NPCMounts/Crawl.nmc'));
 assert.deepEqual([0,4,8,12].map(i=>crawl.readUInt32LE(i)),[0x434d504e,1,99,8]);
 let crawlOffset=16+99*64+99*2;for(let i=0;i<8;i++){assert(crawl.readFloatLE(crawlOffset)>0);const frames=crawl.readUInt32LE(crawlOffset+4);assert(frames>=2&&frames<=2048);crawlOffset+=8+frames*99*48;}assert.equal(crawlOffset,crawl.length);
@@ -61,5 +61,5 @@ for(let i=0;i<7;i++){const book=books.find(b=>b.id===0x01000000+[0x810,0x811,0x8
 assert(implementation.includes('MigrateKnownSpells(player)'));
 assert.equal((implementation.match(/player->AddSpell\(/g)||[]).length,1); // Only conditional old-spell migration, no automatic learning.
 assert(fs.existsSync(path.join(dist,'meshes/NPCMounts/restraintpost_static.nif')));
-const report={pluginRecords:25,currentSpells:5,spellTomes:7,legacyTomes:2,retiredBooks:0,onlyMaster:'Skyrim.esm',noNPCOrRaceOverrides:true,validatedUniqueClips:18,animationAliases:hkx,mutuallyExclusiveRanks:true,gameTested:false};
+const report={pluginRecords:25,currentSpells:5,spellTomes:7,legacyTomes:2,retiredBooks:0,onlyMaster:'Skyrim.esm',noNPCOrRaceOverrides:true,validatedUniqueClips:18,animationAliases:hkx,phantomRiderFrames:13,scopedRiderLayer:true,gameTested:false};
 fs.writeFileSync(path.join(repo,'reports/package-verification.json'),JSON.stringify(report,null,2));console.log(report);

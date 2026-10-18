@@ -189,14 +189,8 @@ OAR=Path(args.output or R/'dist')/'meshes/actors/character/animations/OpenAnimat
 form=lambda n:dict(pluginName='NPCMounts.esp',formID=f'{n:X}')
 def is_additive(prefix,filename):
  return aliasBindings.get(prefix+filename,aliasBindings.get(filename,aliasBindings.get('female/'+filename,0)))==1
-for rank,(name,_) in sources.items():
- folder=OAR/f'{rank:02d}-{name}';folder.mkdir(exist_ok=True)
- cfg=dict(name=name,disabled=True,priority=2147483630+rank,interruptible=True,hasCustomBlendTimeOnInterrupt=True,blendTimeOnInterrupt=0.12,conditions=[dict(condition='FactionRank',requiredVersion='1.0.0',Faction=form(0x800),Comparison='==',**{'Numeric value':{'value':rank}})])
- (folder/'config.json').write_text(json.dumps(cfg,indent=2))
- for filename in aliases:
-  for prefix in ['', 'female/']:
-   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
-   target.write_bytes((neutralFile if is_additive(prefix,filename) else clips[rank]).read_bytes())
+# NPC locomotion is sampled by Crawl.nmc. Only the active rider layer needs
+# OAR aliases; do not recreate the ten obsolete disabled NPC directories.
 folder=OAR/'rider';folder.mkdir(exist_ok=True)
 (folder/'config.json').write_text(json.dumps(dict(name='rider',disabled=False,priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
 for filename in aliases:
@@ -204,4 +198,4 @@ for filename in aliases:
   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
   target.write_bytes((neutralFile if is_additive(prefix,filename) else riderJumps.get(filename,riderFile)).read_bytes())
 (R/'reports/animations.json').write_text(json.dumps(dict(mapping=mapping,sourceMode='human-crawl' if args.crawl_dir else 'horse-retarget',crawlSources=crawlFiles if args.crawl_dir else None,stableBackAnchor=bp[S.bones.index('NPC Spine2 [Spn2]')].tolist(),clips=reports,aliases=sorted(aliases),additiveOverlaysNeutralized=[k for k,v in aliasBindings.items() if v==1],riderJumpAnnotationsPreserved=True,bakedRiderSeat=seat.tolist(),humanIdleCameraPreserved=True,gameTested=False),indent=2))
-print('Built',len(reports),'validated clips and',len(aliases)*22,'scoped animation aliases')
+print('Built',len(reports),'validated clips and',len(aliases)*2,'rider animation aliases')

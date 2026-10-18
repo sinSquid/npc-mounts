@@ -8,12 +8,16 @@
 #include <mutex>
 
 namespace Seat {
-constexpr unsigned bones=99, frames=31;
+constexpr unsigned bones=99, frames=31, riderFrames=13;
 struct Pose { float t[4], q[4], s[4]; };
 static_assert(sizeof(Pose)==sizeof(RE::hkQsTransform));
 std::array<std::array<Pose,bones>,frames> animation;
+std::array<std::array<Pose,bones>,riderFrames> riderAnimation;
 std::array<std::array<char,64>,bones> names;
 std::array<std::int16_t,bones> parents;
+RE::NiPoint3 riderCenter;
+float riderDuration=0.f,riderTime=0.f,riderSway=0.f;
+int riderGait=0;
 std::mutex mutex;
 struct GraphBinding {RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;};
 struct GraphStamp {const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
@@ -21,9 +25,8 @@ std::vector<GraphBinding> graphs;
 std::vector<GraphStamp> graphStamp;
 const RE::BSAnimationGraphManager* boundManager=nullptr;
 const RE::NiAVObject* boundRoot=nullptr;
-bool boundSwimming=false;
 const char* bindError="座位资源未加载，请查看NPCMounts日志";
-RE::NiPoint3 target,exitTarget;
+RE::NiPoint3 target,exitTarget,exitPelvis;
 float frameDelta=0.f;
 bool airborne=false,filterValid=false;
 const RE::NiAVObject* filteredRoot=nullptr;
@@ -64,6 +67,16 @@ void Sample(float t,Pose* pose) {
         for(float& v:pose[i].q)v/=std::sqrt(norm);
     }
 }
+void SampleRider(float t,Pose* pose) {
+    const float f=std::fmod(std::max(t,0.f),riderDuration)/riderDuration*riderFrames;
+    const unsigned a=static_cast<unsigned>(f)%riderFrames,b=(a+1)%riderFrames;const float weight=f-std::floor(f);
+    for(unsigned i=0;i<bones;++i){
+        const auto& p=riderAnimation[a][i];const auto& q=riderAnimation[b][i];float dot=0,norm=0;
+        for(unsigned n=0;n<4;++n)dot+=p.q[n]*q.q[n];
+        for(unsigned n=0;n<4;++n){pose[i].t[n]=p.t[n]+weight*(q.t[n]-p.t[n]);pose[i].s[n]=p.s[n]+weight*(q.s[n]-p.s[n]);pose[i].q[n]=p.q[n]+weight*((dot<0?-q.q[n]:q.q[n])-p.q[n]);norm+=pose[i].q[n]*pose[i].q[n];}
+        for(float& value:pose[i].q)value/=std::sqrt(norm);
+    }
+}
 std::string_view Canonical(std::string_view name){
     return name=="x_NPC LookNode [Look]"?"NPC LookNode [Look]":name;
 }
@@ -97,15 +110,18 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     const auto& header=output.tracks->masterHeader;
     if(header.numTracks<3 || header.numTracks>128 || header.numBytes<16+header.numTracks*16)return;
     const auto& track=output.tracks->trackHeaders[2];
-    const int bytes=bones*sizeof(Pose),begin=16+header.numTracks*16;
+    const int begin=16+header.numTracks*16;
     if(track.numData<bones || track.numData>binding->count || track.capacity<track.numData || track.elementSizeBytes!=sizeof(Pose) ||
         static_cast<int>(track.flags)!=0 || static_cast<int>(track.type)!=1 || track.onFraction<=0 ||
         track.dataOffset<begin || track.dataOffset>header.numBytes || track.numData*sizeof(Pose)>header.numBytes-track.dataOffset)return;
     auto* outputPose=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
-    auto* native=reinterpret_cast<Pose*>(outputPose);std::vector<Pose> pose(track.numData);std::memcpy(pose.data(),outputPose,track.numData*sizeof(Pose));
+    auto* native=reinterpret_cast<Pose*>(outputPose);
+    thread_local std::vector<Pose> pose;pose.resize(track.numData);std::memcpy(pose.data(),outputPose,track.numData*sizeof(Pose));
     // Keep native clip timing/extracted motion. Only the rendered human pose
     // is replaced; locomotion must not be replaced by a nine-second idle clip.
-    std::array<Pose,bones> source;if(phase>=0)Sample(phase,source.data());else source=animation.front();
+    std::array<Pose,bones> sampled;const Pose* source=animation.front().data();
+    if(phase>=0){Sample(phase,sampled.data());source=sampled.data();}
+    else if(riderGait){SampleRider(riderTime,sampled.data());source=sampled.data();}
     // The rider uses the static riding root/helper tracks. Native locomotion
     // root blending leaves a small lateral drift, especially while running.
     // Extracted motion is a separate output track and still drives physics;
@@ -113,7 +129,7 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     for(unsigned i=0;i<bones;++i)if(binding->map[i]!=std::numeric_limits<unsigned>::max()&&
         !std::string_view(names[i].data()).starts_with("Camera")&&(binding->fullRoot||i>=4))pose[binding->map[i]]=source[i];
     // Rider body is authored below; extracted motion still drives physics.
-    std::vector<RE::NiPoint3> positions(track.numData);std::vector<RE::NiMatrix3> basis(track.numData);
+    thread_local std::vector<RE::NiPoint3> positions;thread_local std::vector<RE::NiMatrix3> basis;positions.resize(track.numData);basis.resize(track.numData);
     for(unsigned i=0;i<static_cast<unsigned>(track.numData);++i){
         auto r=Rotation(pose[i].q);for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)r.entry[row][col]*=pose[i].s[col];
         const RE::NiPoint3 point{pose[i].t[0],pose[i].t[1],pose[i].t[2]};const int parent=binding->parents[i];
@@ -125,6 +141,13 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     RE::NiMatrix3 inverse;
     const auto com=binding->map[4],pelvis=binding->map[5];if(com>=pose.size()||pelvis>=pose.size())return;
     const auto comParent=binding->parents[com];if(comParent<0||!Inverse(basis[comParent],inverse))return;
+    if(phase<0&&riderGait){
+        std::array<RE::NiPoint3,bones> riderPositions;std::array<RE::NiMatrix3,bones> riderBasis;World(source,riderPositions,riderBasis);
+        // Preserve the source clip's fore/aft and vertical ride motion, while X
+        // remains exactly on the mount centreline at every frame.
+        desired.y+=(riderPositions[5].y-riderCenter.y)*riderSway;
+        desired.z+=(riderPositions[5].z-riderCenter.z)*riderSway;
+    }
     const auto correction=inverse*(desired-positions[pelvis]);
     pose[com].t[0]+=correction.x;pose[com].t[1]+=correction.y;pose[com].t[2]+=correction.z;
     for(unsigned i=0;i<bones;++i)if(binding->map[i]!=std::numeric_limits<unsigned>::max()&&
@@ -147,6 +170,21 @@ bool Install(){
         if(std::abs(norm-1)>0.01f)return false;
         for(unsigned j=0;j<3;++j)if(!std::isfinite(p.s[j])||p.s[j]<=0)return false;
     }
+    std::array<RE::NiPoint3,bones> positions;std::array<RE::NiMatrix3,bones> basis;World(animation.back().data(),positions,basis);exitPelvis=positions[5];
+    std::ifstream rider("Data/SKSE/Plugins/NPCMounts/Rider.nmr",std::ios::binary);
+    rider.read(reinterpret_cast<char*>(header.data()),sizeof(header));
+    if(header!=std::array<std::uint32_t,4>{0x524d504e,1,bones,riderFrames})return false;
+    rider.read(reinterpret_cast<char*>(&riderDuration),sizeof(riderDuration));
+    std::array<std::array<char,64>,bones> riderNames;std::array<std::int16_t,bones> riderParents;
+    rider.read(reinterpret_cast<char*>(riderNames.data()),sizeof(riderNames));rider.read(reinterpret_cast<char*>(riderParents.data()),sizeof(riderParents));
+    rider.read(reinterpret_cast<char*>(riderAnimation.data()),sizeof(riderAnimation));if(!rider||rider.peek()!=EOF||riderNames!=names||riderParents!=parents||!std::isfinite(riderDuration)||riderDuration<=0.f)return false;
+    RE::NiPoint3 low{std::numeric_limits<float>::max(),std::numeric_limits<float>::max(),std::numeric_limits<float>::max()};
+    RE::NiPoint3 high{-low.x,-low.y,-low.z};
+    for(const auto& frame:riderAnimation){
+        for(const auto& pose:frame){for(float value:pose.t)if(!std::isfinite(value))return false;float norm=0;for(float value:pose.q){if(!std::isfinite(value))return false;norm+=value*value;}if(std::abs(norm-1)>0.01f)return false;}
+        World(frame.data(),positions,basis);low.x=std::min(low.x,positions[5].x);low.y=std::min(low.y,positions[5].y);low.z=std::min(low.z,positions[5].z);high.x=std::max(high.x,positions[5].x);high.y=std::max(high.y,positions[5].y);high.z=std::max(high.z,positions[5].z);
+    }
+    riderCenter=(low+high)*.5f;
     REL::Relocation<std::uintptr_t> graph{RE::VTABLE_hkbBehaviorGraph[0]};
     original=reinterpret_cast<Generate>(graph.write_vfunc(0x17,GeneratePose));loaded=true;return true;
 }
@@ -204,18 +242,19 @@ bool Bind(RE::Actor* player){
     auto next=Collect(player);if(next.empty()){bindError="玩家动画图尚未加载或基础骨骼不兼容，详见NPCMounts日志";return false;}
     RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;player->GetAnimationGraphManager(manager);
     auto stamp=Snapshot(*manager);
-    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();boundSwimming=player->AsActorState()->IsSwimming();return true;
+    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();return true;
 }
+void DropBindings(){std::scoped_lock lock(mutex);active=false;graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;wrote=false;finished=false;}
 bool Refresh(RE::Actor* player){
-    RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;if(!player||!player->GetAnimationGraphManager(manager)||!manager)return false;
+    RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;if(!player||!player->GetAnimationGraphManager(manager)||!manager){DropBindings();return false;}
     {std::scoped_lock lock(mutex);if(boundManager==manager.get()&&boundRoot==player->Get3D()&&Matches(*manager,graphStamp))return !graphs.empty();}
-    auto next=Collect(player);if(next.empty())return false;
+    auto next=Collect(player);if(next.empty()){DropBindings();return false;}
     auto stamp=Snapshot(*manager);
-    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();boundSwimming=player->AsActorState()->IsSwimming();active=active&&!graphs.empty();wrote=false;return true;
+    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();active=active&&!graphs.empty();wrote=false;return true;
 }
 const char* BindError(){return bindError;}
-void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;boundSwimming=false;wrote=false;finished=false;progress=-1.f;entering=false;filterValid=false;filteredRoot=nullptr;frameDelta=0.f;}
-void Motion(float delta,bool air){std::scoped_lock lock(mutex);frameDelta=std::clamp(delta,0.f,.1f);airborne=air;}
+void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;wrote=false;finished=false;progress=-1.f;entering=false;filterValid=false;filteredRoot=nullptr;frameDelta=0.f;riderTime=0.f;riderGait=0;}
+void Motion(float delta,bool air,int gait){std::scoped_lock lock(mutex);frameDelta=std::clamp(delta,0.f,.1f);airborne=air;const int next=!air&&gait>=1&&gait<=4?gait:0;if(next&&!riderGait)riderTime=0.f;else if(next)riderTime=std::fmod(riderTime+frameDelta,riderDuration);if(!next)riderTime=0.f;riderGait=next;}
 void Entering(bool value){std::scoped_lock lock(mutex);entering=value;finished=false;}
 bool Working(){return wrote.load(std::memory_order_relaxed);}
 unsigned TakeWrites(){return writes.exchange(0,std::memory_order_relaxed);}
@@ -225,12 +264,13 @@ void Update(RE::Actor* player,RE::Actor* mount,const Settings::Data& config,floa
     const auto suspend=[](){std::scoped_lock lock(mutex);active=false;wrote=false;finished=false;filterValid=false;};
     auto* p=player->Get3D();auto* m=mount->Get3D();
     if(!p||!m||!std::isfinite(p->world.scale)||!std::isfinite(m->world.scale)||p->world.scale<=0||m->world.scale<=0){suspend();return;}
-    auto* back=m->GetObjectByName("SaddleBone");if(!back)back=m->GetObjectByName("NPC Spine2 [Spn2]");if(!back){suspend();return;}
+    auto* saddle=m->GetObjectByName("SaddleBone");auto* back=saddle?saddle:m->GetObjectByName("NPC Spine2 [Spn2]");if(!back){suspend();return;}
     RE::NiPoint3 local;
     if(!Crawl::Anchor(mount,local,config.riderSway)){suspend();return;}
+    const float sway=std::clamp(config.riderSway,0.f,1.f);
     // A real custom saddle keeps its model-space offset; ordinary spine uses the
     // same sampled pose as Crawl, not last frame's world-space skeleton.
-    if(m->GetObjectByName("SaddleBone"))local=m->world.rotate.Transpose()*(back->world.translate-m->world.translate)/m->world.scale;
+    if(saddle)local=m->world.rotate.Transpose()*(back->world.translate-m->world.translate)/m->world.scale;
     local=local+RE::NiPoint3{config.seatSide,config.seatForward,config.seatHeight};
     auto desired=local;
     // Filter only pose-local height. World translation/terrain must not enter this filter.
@@ -244,9 +284,11 @@ void Update(RE::Actor* player,RE::Actor* mount,const Settings::Data& config,floa
     const auto playerWorld=p->world,mountWorld=m->world;
     desired=playerWorld.rotate.Transpose()*(mountWorld.translate-playerWorld.translate)/playerWorld.scale+
         playerWorld.rotate.Transpose()*mountWorld.rotate*desired*(mountWorld.scale/playerWorld.scale);
-    std::array<RE::NiPoint3,bones> end;std::array<RE::NiMatrix3,bones> endBasis;World(animation.back().data(),end,endBasis);
-    const auto exitWorld=player->GetPosition()+exitOffset;
-    const auto exit=end[5]+playerWorld.rotate.Transpose()*(exitWorld-playerWorld.translate)/playerWorld.scale;
-    std::scoped_lock lock(mutex);target=desired;exitTarget=exit;progress=phase;active=!graphs.empty();
+    // Entry starts at the mount's right side. Exit starts beside the player's
+    // current position. Using the player for both made entry depend on where E
+    // happened to be pressed and produced the observed initial lateral offset.
+    const auto exitWorld=(entering?mount->GetPosition():player->GetPosition())+exitOffset;
+    const auto exit=exitPelvis+playerWorld.rotate.Transpose()*(exitWorld-playerWorld.translate)/playerWorld.scale;
+    std::scoped_lock lock(mutex);target=desired;exitTarget=exit;progress=phase;riderSway=sway;active=!graphs.empty();
 }
 }

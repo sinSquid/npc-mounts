@@ -1,6 +1,7 @@
 /build/
 /dist/
 /reports/
+__pycache__/
 *.sseviewsettings
 # Locally reused third-party game models; redistribution rights not established.
 /assets/meshes/

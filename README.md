@@ -40,7 +40,7 @@
 
 运行时依赖：SKSE 2.0.20、对应 Address Library、OAR。无需 F NPC Mount、Paola、Piggyback 或 RSE。
 未增加行为图，不需要为本包重新运行 Pandora。保留 OAR 预加载；当前整合的重复动画过滤已开启。
-18 个实际动画由6996个路径复用；路径补齐武器/魔法等移动与冲刺变体，不是6996段不同动作。保持OAR重复动画过滤开启。
+当前保留骑手OAR层的636个动作路径，覆盖男女、武器/魔法、移动和跳跃入口。NPC爬行由Crawl.nmc提供；此前10套已禁用的NPC OAR目录及6360个旧动作别名已清理。保持OAR重复动画过滤开启。
 
 日志由INI的LogLevel统一控制：0完全关闭且本次运行不创建/改写日志，1仅错误，2错误与警告，3基础运行信息，4完整限量诊断。启用3或4时日志位于Documents/My Games/Skyrim Special Edition/SKSE/NPCMounts.log；4级每次骑乘最多1200组、每0.5秒一组运动诊断。旧DebugLog仅在没有LogLevel时迁移，0映射为关闭、1映射为4。日志不代表功能验收。
 
@@ -52,9 +52,15 @@
 
 2026-10-18 Y4.1颠簸修正：解析本机Phantom Horse 2.0的女性前进冲刺动作后，按其“COM横向X恒为0”的约束修正座位。NPC爬行动作仍提供周期相位，但不再把任何X变化传给骑手；Y限幅±1.5，Z限幅-2.4～+3.3，再乘RiderSway。SeatSide仍是用户设置的静态侧向偏移，不属于颠簸。
 
+2026-10-18 Y4.4自检：装备快照在卸下手持物之前记录拔武器状态；动画图刷新失败会清除旧座位绑定，避免沿用失效图和错误“已输出”状态。座位热路径复用线程缓冲，并把固定下骑骨盆位置改为资源加载时一次计算；转换目标循环复用当前状态引用。移除未参与行为的游泳缓存、落地计时、旧步态变量和重复限频结构。已通过离线构建与回归，尚未完成游戏验收。
+
+2026-10-18 Y4.5座位微调：上下骑过渡起点沿坐骑右侧由96调整为128游戏单位；稳定乘骑的动态横向X与前后Y保持0偏移，仅保留显式SeatSide/SeatForward配置。现有骑姿资源本身已经来自原版人类骑马姿势，但原版待机的骨盆与重心没有可见上下位移，因此不替换动画；改为按爬行步态周期生成对称垂直起伏，步行/后退、奔跑、冲刺幅度分别为±1.5、±2.25、±3.0模型单位，并继续受RiderSway控制。已通过离线测试不等于游戏验收。
+
+2026-10-18 Y4.6幻影马骑姿：日志确认Y4.5的NPC/玩家世界位置同步正常，但静态骑姿仍覆盖运动帧，程序化颠簸并未播放Phantom Horse动作。Y4.6改为从本地Phantom Horse 2.0 Base Sprint精确生成13帧Rider.nmr并由DLL采样；运动时应用完整骑姿旋转和Y/Z骨盆运动，X始终锁在座位中心，静止、转向和空中使用稳定骑姿。移除爬行动作侧的第二重正弦颠簸。上马过渡改以NPC位置为基准，下马仍以玩家位置为基准，避免按交互键时玩家站位改变初始X偏移。运行时不依赖Phantom Horse。已通过离线构建与回归，不等于游戏验收。
+
 ## 0.2.0 配置
 
-待构建源码变更（尚未部署）：缩放/速度倍率/三个时间参数步长0.05；跳跃0.1；座位偏移0.5；朝向1度；步态速度阈值5。范围、默认值不变；INI与菜单共用取整规则，旧的非档位数值会在新版读取/应用时就近取整。仅做源码/浮点模型检查，尚未编译；当前已部署0.4.2不含这项变更。
+缩放、速度倍率与长按时间步长0.05；跳跃0.1；座位偏移0.5；朝向1度；步态速度阈值5。范围、默认值不变；INI与菜单共用取整规则，旧的非档位数值会在读取或应用时就近取整。
 
 F1打开已安装的SKSE Menu Framework，选择“NPC坐骑 / 骑乘配置”。调整后点击“保存并应用”；“恢复默认值”仅填入草稿，仍需保存。可从INI重新读取并应用。
 配置文件：`SKSE/Plugins/NPCMounts.ini`。MO2运行时保存可能写入Overwrite或指定输出Mod；以MO2虚拟目录的最终获胜文件为准，不要误以为源Mod一定被原地写入。
@@ -62,7 +68,7 @@ F1打开已安装的SKSE Menu Framework，选择“NPC坐骑 / 骑乘配置”�
 - 覆盖NPC缩放默认关闭，保留各NPC原scale；开启后可选0.5—3，关闭或B还原原scale。
 - 速度倍率1—2，基于当前SpeedMult加自身临时差值，不每帧重复累加；骑乘时同步作用于玩家移动控制器，下骑移除玩家差值，B移除NPC差值。
 - 自动座位跟踪始终启用，读取SaddleBone或Spine2背骨及双方实际模型比例；可调整高度、前后、左右及NPC朝向偏角。即使关闭缩放覆盖也继续跟踪。
-- 长按阈值0.25—2秒（必须超过阈值），默认0.25秒。上下骑无过渡动画，不再显示或保存上下骑动画时长；旧INI的两个时长键忽略。
+- 长按阈值0.25—2秒（必须超过阈值），默认0.25秒。上下骑使用固定0.85秒姿态过渡，不再显示或保存动画时长；旧INI的两个时长键忽略。
 - 可配置跳跃、后退、Ctrl/潜行、Alt、战斗输入拦截、步态阈值和诊断日志。默认保留跳跃，禁止后退/潜行/Alt/战斗动作。
 - 下骑键0使用游戏交互键；其他值为十进制键盘扫描码，不是Windows虚拟键码。
 
@@ -80,7 +86,7 @@ Menu Framework为可选配置界面；缺失时仍读取INI，修改INI后重启
 - F·解除牵引：断开本插件创建的绳索并由框架删除独立绳模型，NPC保持坐骑状态。C和E互斥，束缚或牵引期间禁止骑乘。
 - B统一解除：优先当前坐骑，其次准星NPC；无目标解除全部。删除C固定桩、解除C/D绳环并尝试重新装备原手部护甲、恢复接管前状态；E异步断开完成后才还原坐骑。原护甲按基础物品恢复，不承诺区分同名护甲不同附魔实例。卸载前先执行B无目标还原，保存退出。
 
-C/D绳环为复制原版PrisonerCuffs记录；固定桩本地复用DD模型，仅引用原版贴图，无DD运行前置，不修改DD文件。LeashFramework只调用接口，不改其源码/文件。素材未经授权不公开再分发。保留原INI取值、种族与6996个爬行/骑手动作路径。
+C/D绳环为复制原版PrisonerCuffs记录；固定桩本地复用DD模型，仅引用原版贴图，无DD运行前置，不修改DD文件。LeashFramework只调用接口，不改其源码/文件。素材未经授权不公开再分发。保留原INI取值、种族与636个有效骑手动作路径。
 新增BIND/TETH co-save记录独立于既有NMNT v5/RIDE。缺框架或初始化失败时拒绝相关操作。需实测C随从快速旅行、D敌对停止及B恢复、E/F绳索/移动、保存读档；离线模拟不能证明这些引擎效果。
 
 ## 构建命令
@@ -90,11 +96,11 @@ C/D绳环为复制原版PrisonerCuffs记录；固定桩本地复用DD模型，�
 需要 Visual Studio 2022 C++、CMake、Node，以及已安装 CommonLibSSE 的依赖前缀：
 
 ```powershell
-.\tools\build.ps1 -Dependencies '<CommonLib CMake prefix>' -SkyrimData '<Skyrim Data>' -Codec '<PyNifly HKX directory>' -CrawlSource '<三段爬行动作目录>' -BoundSource '<99轨束缚待机HKX>'
+.\tools\build.ps1 -Dependencies '<CommonLib CMake prefix>' -SkyrimData '<Skyrim Data>' -Codec '<PyNifly HKX目录>' -CrawlSource '<三段爬行动作目录>' -BoundSource '<99轨束缚待机HKX>' -RiderSource '<Phantom Horse Base Sprint mt_sprintForward.hkx>'
 node .\tests\verify-package.cjs
 ```
 
-`build.ps1` 生成 ESP、DLL、默认INI和Dismount.nmp；基础动画需先使用 `tools/build-animations.py` 生成到 `dist`，并保留build/animations缓存供下骑制作。Python可用-Python指定。
+`build.ps1` 生成 ESP、DLL、默认INI、Dismount.nmp和Rider.nmr；Rider.nmr从本地Phantom Horse骑手动作生成，运行时不依赖Phantom Horse。基础动画需先使用 `tools/build-animations.py` 生成到 `dist`，并保留build/animations缓存供下骑制作。Python可用-Python指定。
 离线动画工具参数可运行 `python tools/build-animations.py --help` 查看。
 工具依赖 numpy、lz4、bethesda-structs、PyNifly HKX 编解码器、HKX2 转换器及 hkxcmd；它们不是游戏前置。
 校准姿势通过 `--calibration` 指定；0.1.6同时传入 `--crawl-dir`，读取用户已有的F NPC Mount的97789动作目录，使用人形爬行原动作并稳定乘坐点。

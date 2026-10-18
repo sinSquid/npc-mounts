@@ -3,7 +3,7 @@ const root=path.resolve(__dirname,'..');
 const src=fs.readFileSync(path.join(root,'src/plugin.cpp'),'utf8');
 assert(src.includes('rideMotion.Update(speed,movement.x,movement.y'));
 assert(!src.includes('if (jumpTimer > 0.f || air) animation = 2'));
-assert.equal((src.match(/rideMotion = \{\}/g)||[]).length,4); // Mount, both Dismount exits, Revert
+assert.equal((src.match(/rideMotion\s*=\s*\{\}/g)||[]).length,4); // Mount, both Dismount exits, Revert
 fs.writeFileSync(path.join(root,'build/ride-gait-regression.cpp'),`
 #include <cassert>
 #include <cstdio>

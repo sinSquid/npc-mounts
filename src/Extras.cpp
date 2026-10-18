@@ -86,7 +86,8 @@ void DeletePost(RE::FormID id){if(auto* ref=RE::TESForm::LookupByID<RE::TESObjec
 bool Bind(RE::Actor* actor,bool pacify){
     Diagnostics::Snapshot(actor,pacify?"Capture requested":"Anchor requested");
     Diagnostics::Trace("Bind converted={} bound={} busy={} ridden={}",Mounts::Converted(actor),Bound(actor),Busy(actor),Mounts::Riding(actor));
-    Binding existing;if(actor&&Find(actor->GetFormID(),existing)){
+    if(!actor){Notify("未选择有效NPC目标");return false;}
+    Binding existing;if(Find(actor->GetFormID(),existing)){
         if(existing.pacified!=pacify){Notify(pacify?"目标已处于固定状态，请先解除固定":"目标已处于捕获状态，请使用人魅-捕获或统一解除");return false;}
         Release(actor);Notify(pacify?"已解除捕获并恢复原状态":"已解除固定");return true;
     }

@@ -44,8 +44,7 @@ RE::EffectSetting* restoreEffect{};
 RE::ActorHandle ridden;
 std::uint32_t mountControllerFlags{}, playerControllerFlags{};
 bool firstPersonBefore{};
-float jumpTimer{}, landTimer{}, previousHeading{}, restoreRetry{};
-int rideGait{};
+float jumpTimer{}, previousHeading{}, restoreRetry{};
 Motion::RideState rideMotion;
 bool wasAir{};
 float rideLogTimer{};
@@ -59,6 +58,7 @@ bool downActive=false; // Kept only to recover transition flags from older RIDE 
 bool upActive=false;
 float transitionTime=0.f;
 constexpr float mountTransitionSeconds=.85f,dismountTransitionSeconds=.85f;
+constexpr float transitionSideOffset=128.f;
 float playerSpeedDelta=0.f, statusTimer=0.f;
 RE::NiPoint3 downOffset;
 std::uint32_t downOriginalFlags=0;
@@ -221,7 +221,7 @@ bool Dismount(bool emergency = false, bool = true)
             player->NotifyAnimationGraph("IdleForceDefaultState");
             RestoreController(player, ridePhysics, playerControllerFlags);
         }
-        ridden.reset(); downActive=false;transitionTime=0.f; jumpTimer = landTimer = 0.f; rideGait = 0; rideMotion = {}; wasAir = false;
+        ridden.reset(); downActive=false;transitionTime=0.f; jumpTimer=0.f; rideMotion = {}; wasAir = false;
         if (firstPersonBefore && !emergency) RE::PlayerCamera::GetSingleton()->ForceFirstPerson();
         return true;
     }
@@ -260,7 +260,7 @@ bool Dismount(bool emergency = false, bool = true)
         state->second.animation = 0;
         StopMotion(mount.get());
     }
-    ridden.reset(); downActive=false;transitionTime=0.f; jumpTimer = landTimer = 0.f; rideGait = 0; rideMotion = {}; wasAir = false;
+    ridden.reset(); downActive=false;transitionTime=0.f; jumpTimer=0.f; rideMotion = {}; wasAir = false;
     if (firstPersonBefore && !emergency) RE::PlayerCamera::GetSingleton()->ForceFirstPerson();
     spdlog::info("Dismounted");
     return true;
@@ -268,7 +268,7 @@ bool Dismount(bool emergency = false, bool = true)
 void BeginDismount() {
     auto mount=ridden.get();if(!mount||downActive||upActive)return;
     downActive=true;transitionTime=0.f;dismountHold.Release();RideDrive::ResetInput();
-    const float angle=mount->GetAngleZ();downOffset={std::cos(angle)*96.f,-std::sin(angle)*96.f,0.f};
+    const float angle=mount->GetAngleZ();downOffset={std::cos(angle)*transitionSideOffset,-std::sin(angle)*transitionSideOffset,0.f};
     Seat::Entering(false);Seat::Update(RE::PlayerCharacter::GetSingleton(),mount.get(),config,0.f,downOffset);
 }
 bool ConversionRejected(RE::Actor* actor,const char* reason){
@@ -315,31 +315,38 @@ bool Convert(RE::Actor* actor)
 }
 void Restore(RE::Actor* actor)
 {
-    if(actor)Travel::Forget(actor->GetFormID());
+    if(!actor)return;
+    Travel::Forget(actor->GetFormID());
     if (!Converted(actor)) {Extras::Release(actor);return;}
     if(!ActorReady(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
     if(!Extras::Release(actor)){targets.at(actor->GetFormID()).restoreRequested=true;return;}
-    const auto saved = targets.at(actor->GetFormID());
+    const auto& saved = targets.at(actor->GetFormID());
+    const auto originalFlags=saved.originalFlags;
+    const auto originalLifeState=saved.lifeState;
+    const auto originalScale=saved.originalScale;
+    const auto aiEnabled=saved.aiEnabled;
+    const auto scaleChanged=saved.scaleChanged;
+    auto speedDelta=saved.speedDelta;
     const bool emergency = actor->IsDead() || actor->IsInKillMove();
     if (auto mount = ridden.get(); mount && mount.get() == actor) {
         if(!emergency){targets.at(actor->GetFormID()).restoreRequested=true;BeginDismount();return;}
         Dismount(true);
     }
-    if(saved.scaleChanged)RestoreScale(actor,saved.originalScale);
-    auto speedDelta=saved.speedDelta;ApplySpeed(actor,1.f,speedDelta);
+    if(scaleChanged)RestoreScale(actor,originalScale);
+    ApplySpeed(actor,1.f,speedDelta);
     actor->RemoveFromFaction(mountFaction);
     StopMotion(actor);
     auto& flags = actor->GetActorRuntimeData().boolFlags;
     if (!actor->IsDead() && (actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kRestrained ||
         actor->AsActorState()->GetLifeState() == RE::ACTOR_LIFE_STATE::kAlive))
-        actor->SetLifeState(saved.lifeState);
+        actor->SetLifeState(originalLifeState);
     flags.reset(ownedFlags);
-    flags.set(static_cast<RE::Actor::BOOL_FLAGS>(saved.originalFlags));
+    flags.set(static_cast<RE::Actor::BOOL_FLAGS>(originalFlags));
     Crawl::Remove(actor->GetFormID());targets.erase(actor->GetFormID());
     Wardrobe::Restore(actor);
     if (!actor->IsDead()) actor->NotifyAnimationGraph("IdleForceDefaultState");
-    actor->EnableAI(saved.aiEnabled);
-    if (saved.aiEnabled && !actor->IsDead()) actor->EvaluatePackage(false, false);
+    actor->EnableAI(aiEnabled);
+    if (aiEnabled && !actor->IsDead()) actor->EvaluatePackage(false, false);
     spdlog::info("Restored ref={:08X}", actor->GetFormID());
     Diagnostics::Snapshot(actor,"Restore completed");
 }
@@ -357,6 +364,7 @@ void Mount(RE::Actor* actor)
     Diagnostics::Trace("Mount gates installed={} converted={} restoring={} bound={} busy={}",RideHooks::installed,Converted(actor),Restoring(actor),Extras::Bound(actor),Extras::Busy(actor));
     Diagnostics::Trace("Ride config logLevel={} overrideScale={} scale={} speed={} jumpHeight={} allowJump={} backward={}",config.logLevel,config.overrideScale,config.npcScale,config.speedMultiplier,config.jumpHeightMultiplier,config.allowJump,config.allowBackward);
     for(const auto& field:Settings::floats)Diagnostics::Trace("Ride setting {}={}",field.key,config.*field.member);
+    if(!actor)return;
     if(!RideHooks::installed){RE::SendHUDMessage::ShowHUDMessage("骑乘移动接口校验未通过，请查看 NPCMounts 日志");return;}
     if(Restoring(actor)){RE::SendHUDMessage::ShowHUDMessage("目标仍在还原，等待牵引清理完成后再转换");return;}
     if(Extras::Bound(actor)||Extras::Busy(actor)){RE::SendHUDMessage::ShowHUDMessage("请先施放人魅-解除坐骑化与束缚，或用人魅-牵引坐骑解除绳索");return;}
@@ -391,9 +399,9 @@ void Mount(RE::Actor* actor)
     player->NotifyAnimationGraph("IdleForceDefaultState");
     downActive=false;dismountHold.Release();ApplySpeed(player,config.speedMultiplier,playerSpeedDelta);
     upActive=true;transitionTime=0.f;
-    const float angle=actor->GetAngleZ();downOffset={std::cos(angle)*96.f,-std::sin(angle)*96.f,0.f};
+    const float angle=actor->GetAngleZ();downOffset={std::cos(angle)*transitionSideOffset,-std::sin(angle)*transitionSideOffset,0.f};
     Seat::Entering(true);Seat::Update(player,actor,config,1.f,downOffset);
-    rideGait = 0; rideMotion = {}; previousHeading = player->GetAngleZ();
+    rideMotion = {}; previousHeading = player->GetAngleZ();
     rideLogTimer = lastNPCDrift = 0.f; rideSamples = rideTicks = npcUpdates = 0;
     jumpAudit=0;jumpAuditBudget=32;Seat::TakeWrites();
     spdlog::info("Mounted ref={:08X}", actor->GetFormID());
@@ -406,20 +414,20 @@ void Tick(RE::Actor* player, float delta)
     Extras::Tick(delta);
     restoreRetry = std::max(0.f, restoreRetry - delta);
     std::vector<RE::FormID> release;
-    for (const auto& [id, state] : targets) {
+    for (auto& [id, state] : targets) {
         auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
         if (actor && (actor->IsDead() || actor->IsInKillMove() || (state.restoreRequested && restoreRetry <= 0.f))) release.push_back(id);
         else if (actor && ActorReady(actor)) {
             if(state.posePending)continue;
-            if(state.animation<0)ResetPose(actor,targets.at(id)); // Recover a load task that ran before 3D was ready.
-            HoldPose(actor);ApplyStats(actor,targets.at(id));
+            if(state.animation<0)ResetPose(actor,state); // Recover a load task that ran before 3D was ready.
+            HoldPose(actor);ApplyStats(actor,state);
             if(Extras::Leashed(actor))if(auto* controller=actor->GetCharController()){
-                targets.at(id).leashMoving=true;
+                state.leashMoving=true;
                 RE::hkVector4 velocity;controller->GetLinearVelocityImpl(velocity);
                 const float speed=std::hypot(velocity.quad.m128_f32[0],velocity.quad.m128_f32[1])*RE::bhkWorld::GetWorldScaleInverse();
-                int gait=std::clamp(state.animation,0,3);SetMotion(actor,targets.at(id),Motion::Choose(speed,1,0,gait,config.runThreshold,config.sprintThreshold));
+                int gait=std::clamp(state.animation,0,3);SetMotion(actor,state,Motion::Choose(speed,1,0,gait,config.runThreshold,config.sprintThreshold));
             }
-            if(!Extras::Leashed(actor)&&state.leashMoving){targets.at(id).leashMoving=false;SetMotion(actor,targets.at(id),0);StopMotion(actor);}
+            if(!Extras::Leashed(actor)&&state.leashMoving){state.leashMoving=false;SetMotion(actor,state,0);StopMotion(actor);}
             if(!Riding(actor))Crawl::Update(actor,state.animation,delta);
         }
     }
@@ -429,12 +437,12 @@ void Tick(RE::Actor* player, float delta)
     if (!mount) { if (ridden) Dismount(true); return; }
     if (!Converted(mount.get())) { Dismount(true); return; }
     if (player->IsDead() || mount->IsDead() || !mount->Get3D() || mount->IsInKillMove()) { Dismount(true); return; }
-    if (!player->GetCharController() || !mount->GetCharController()) { Dismount(true); return; }
+    auto* cc=player->GetCharController();
+    if (!cc || !mount->GetCharController()) { Dismount(true); return; }
     if (!RideReady(mount.get(),player)) { Dismount(true); return; }
     ApplySpeed(player,config.speedMultiplier,playerSpeedDelta);
     if(dismountHold.Tick(delta,config.holdSeconds)){BeginDismount();return;}
-    if (auto* cc = player->GetCharController()) cc->flags.set(ridePhysics);
-    auto* cc = player->GetCharController();
+    cc->flags.set(ridePhysics);
     RE::hkVector4 velocity;
     cc->GetLinearVelocityImpl(velocity);
     if(config.logLevel>=4&&jumpAudit){
@@ -444,7 +452,7 @@ void Tick(RE::Actor* player, float delta)
             velocity.quad.m128_f32[2],cc->outVelocity.quad.m128_f32[2],cc->flags.underlying());
     }
     const float speed = std::hypot(velocity.quad.m128_f32[0], velocity.quad.m128_f32[1]) * RE::bhkWorld::GetWorldScaleInverse();
-    const bool air = cc && (cc->context.currentState == RE::hkpCharacterStateType::kInAir || cc->context.currentState == RE::hkpCharacterStateType::kJumping);
+    const bool air = cc->context.currentState == RE::hkpCharacterStateType::kInAir || cc->context.currentState == RE::hkpCharacterStateType::kJumping;
     // Jumping can still carry ground/support velocity before the jump impulse.
     // Acknowledge the pending request only after entering InAir; height was
     // already supplied to the controller, so never multiply sampled velocity.
@@ -453,22 +461,20 @@ void Tick(RE::Actor* player, float delta)
         Diagnostics::Trace("Jump takeoff speedZ={} multiplier={}",velocity.quad.m128_f32[2],config.jumpHeightMultiplier);
         jumpTimer=0.f; // Consume the accepted jump; contact flicker must not boost twice.
     }
-    if (wasAir && !air) landTimer = 0.3f;
     wasAir = air;
     jumpTimer = std::max(0.f, jumpTimer - delta);
-    landTimer = std::max(0.f, landTimer - delta);
     const auto movement = RE::PlayerControls::GetSingleton()->data.moveInputVec;
     if(upActive||downActive){
         auto& playerFlags=player->GetActorRuntimeData().boolFlags;playerFlags.set(downFlags);
         Seat::Refresh(player);
         SetMotion(mount.get(),targets.at(mount->GetFormID()),0);Crawl::Update(mount.get(),0,delta);
         if(upActive&&(!Crawl::Working(mount.get())||!Seat::Working())){
-            Seat::Motion(delta,false);Seat::Update(player,mount.get(),config,1.f,downOffset);return;
+            Seat::Motion(delta,false,0);Seat::Update(player,mount.get(),config,1.f,downOffset);return;
         }
         transitionTime+=delta;
         const float duration=upActive?mountTransitionSeconds:dismountTransitionSeconds;
         const float t=std::clamp(transitionTime/duration,0.f,1.f);
-        Seat::Motion(delta,false);
+        Seat::Motion(delta,false,0);
         Seat::Update(player,mount.get(),config,upActive?1.f-t:t,downOffset);
         if(t>=1.f){if(upActive){upActive=false;transitionTime=0.f;playerFlags.reset(downFlags);playerFlags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags));Seat::Entering(false);Seat::Update(player,mount.get(),config);}else{Dismount();} }
         return;
@@ -482,7 +488,7 @@ void Tick(RE::Actor* player, float delta)
     SetMotion(mount.get(), state, animation);
     Crawl::Update(mount.get(),animation,delta);
     Seat::Refresh(player);
-    Seat::Motion(delta,air);
+    Seat::Motion(delta,air,animation);
     Seat::Update(player,mount.get(),config);
     ++rideTicks;
     statusTimer-=delta;
@@ -545,7 +551,9 @@ void AuditLocation(RE::Actor* actor) {
     static decltype(Extras::Session()) epoch{};
     static unsigned count=0;
     if(epoch!=Extras::Session()){previous.clear();count=0;epoch=Extras::Session();}
-    if(config.logLevel<4){previous.clear();return;}
+    static bool enabled=false;
+    if(config.logLevel<4){if(enabled){previous.clear();enabled=false;}return;}
+    enabled=true;
     const auto id=actor->GetFormID();
     if(!Converted(actor)){previous.erase(id);return;}
     auto* cell=actor->GetParentCell();if(!cell)return;
@@ -917,7 +925,7 @@ void Load(SKSE::SerializationInterface* save)
         }
     }
 }
-void Revert(SKSE::SerializationInterface*) { RideDrive::End();Travel::Revert();Crawl::Clear();Wardrobe::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;transitionTime=0;playerSpeedDelta=0; jumpTimer = landTimer = restoreRetry = 0.f; rideGait = 0; rideMotion = {}; wasAir = false; }
+void Revert(SKSE::SerializationInterface*) { RideDrive::End();Travel::Revert();Crawl::Clear();Wardrobe::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;transitionTime=0;playerSpeedDelta=0;jumpTimer=restoreRetry=0.f;rideMotion={};wasAir=false; }
 void MigrateKnownSpells(RE::PlayerCharacter* player){
     auto* data=RE::TESDataHandler::GetSingleton();
     const std::array<std::pair<std::uint32_t,RE::SpellItem*>,2> migrations{{
@@ -976,7 +984,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESSpellCastEvent>(&events);
         RegisterRideInput();
         spdlog::info("Ready 0.4.4: equipment restore, capture, human anchor and transition poses");
-        spdlog::info("Runtime Y4.3 candidate: log levels 0-4, exact water graph rebinding and bounded rider sway; game validation pending");
+        spdlog::info("Runtime Y4.6 candidate: mount-relative entry and exact Phantom Horse rider motion with zero lateral bob; game validation pending");
         spdlog::info("Build compiled {} {}: game validation pending",__DATE__,__TIME__);
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
@@ -989,7 +997,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         }
         loadedRideState=downActive=false;dismountHold.Release();Seat::Clear();
         RegisterRideInput();
-        // A-F are learned from BOOK records. Preserve spells already learned in old saves.
+        // Spells are learned from BOOK records. Preserve spells already learned in old saves.
         player->RemoveFromFaction(riderFaction);
         Extras::PostLoad();
         Travel::Initialize();

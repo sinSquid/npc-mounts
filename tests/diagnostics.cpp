@@ -8,10 +8,6 @@
 std::string Read(const std::filesystem::path& path){std::ifstream in(path);return {std::istreambuf_iterator<char>(in),{}};}
 int main(){
  using namespace Diagnostics;
- Gate gate;unsigned samples=0;
- for(std::uint64_t ms=0;ms<600000;++ms)if(gate.Allow(ms,500))++samples;
- assert(samples==1200); // 1000 calls/second still emit at most 2/second.
- assert(!gate.Allow(599999,500)&&gate.Allow(600000,500));
  std::atomic_uint winners{0};std::vector<std::thread> workers;
  for(unsigned i=0;i<32;++i)workers.emplace_back([&]{for(unsigned j=0;j<1000;++j)if(Sample(2,60000))++winners;});
  for(auto& worker:workers)worker.join();assert(winners==1);
