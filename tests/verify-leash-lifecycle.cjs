@@ -20,7 +20,7 @@ namespace RE {using FormID=unsigned;struct Actor;inline Actor* known=nullptr;
 struct Ref {Actor* p;Actor* get(){return p;}Actor* operator->(){return p;}explicit operator bool()const{return p;}};
 struct Handle {Actor* p;Ref get()const{return {p};}};
 struct NiPoint3 {float x,y,z;NiPoint3 operator+(NiPoint3 b){return{x+b.x,y+b.y,z+b.z};}};
-struct Cell{};inline Cell cell;
+struct Cell{struct{void* worldSpace=nullptr;}data;auto& GetRuntimeData(){return data;}};using TESObjectCELL=Cell;inline Cell cell;
 struct TESObjectREFR {Cell* GetParentCell(){return &cell;}NiPoint3 GetPosition(){return{80,0,0};}};inline TESObjectREFR post;
 struct TESForm {template<class T>static T* LookupByID(unsigned id){if constexpr(std::is_same_v<T,TESObjectREFR>)return id==9?&post:nullptr;else return id==1?known:nullptr;}};
 struct Actor {unsigned id=1;bool converted=true,bound=false,riding=false;Cell* GetParentCell(){return &cell;}unsigned GetFormID(){return id;}Handle GetHandle(){return {this};}template<class T>T* As(){return static_cast<T*>(this);}};
@@ -37,6 +37,7 @@ struct Binding{unsigned post=9;};bool Find(unsigned,Binding&){return true;}
 unsigned releases=0;bool Release(RE::Actor* a){++releases;a->bound=false;return true;}
 unsigned anchorCalls=0;bool Bind(RE::Actor* a,bool pacify){assert(a&&!pacify);++anchorCalls;return true;}
 void StartTether(RE::Actor*,bool=false);
+${take('bool SameSpace(')}
 ${take('bool Busy(')}
 ${take('bool Leashed(')}
 template<class... Args>bool Call(const char* name,std::function<void(bool)> fn,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn)});return true;}

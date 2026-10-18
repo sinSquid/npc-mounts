@@ -1,0 +1,26 @@
+NPCMounts U — 2026-10-17
+范围：移除上下马过渡，骑乘时禁止玩家人类跳跃入口，增加可切换鼠标转向。未恢复DoM改动。
+
+实现
+1. Mount直接Seat::Entering(false)+静态座位，取消过渡计时与水平移动锁；BeginDismount直接调用既有Dismount，保留严格长按阈值。Tick不再运行上下骑动画分支，触发下骑后立即return，避免清理后继续写座位。B仍保留现有restoreRequested重试：先退出骑乘，下一次还原重试恢复NPC。旧RIDE过渡标志读档恢复保留。
+2. 旧JumpInput的原处理只判断事件是否为Jump，之后ProcessButton仍进入人类跳跃动作。这是之前漏检的真实调用链。本轮骑乘时始终返回false，不向原版JumpHandler::ProcessButton分发；未骑乘仍调用原处理。
+3. 实际1.5.97 EXE：JumpHandler槽4位于7090A0，7091B4转到5D1F80；该动作最终调用DBEEE0，写控制器wantState(21C)=1、jumpHeight(23C)=世界高度*Havok比例。世界高度由实时1DE2320值(当前64)*GetScale构成。本轮直接写同一控制器请求，绕过人类动画动作；保留CanJump、空中/重复输入限制及已有起跳系数一次性调整，不向NPC另加跳跃冲量。tools/inspect-jump.cjs核验实际指令和调用目标，不猜测新函数ABI。
+4. MouseSteering=1，中文“鼠标准星控制转向（关闭则鼠标仅观察）”。开启时以第三人称freeRotation.x引导朝向，限速1.5rad/s；同步减去已消耗的相对镜头角，保持世界观察方向，避免反馈旋转。A/D、摇杆辅助转向优先，W/S与后退开关不变。关闭后不运行Aim。INI与菜单共用bool元数据。
+5. 移除动画时长菜单/写出项，旧键读入时忽略。部署INI从当前实际文件复制，仅新增开关、移除失效时长；保留用户卸装=1、scale=1.85、speed=1.6、jump=1.2及其余值，不覆盖为默认模板。
+
+验证边界
+两轮各30组生产函数/头文件离线回归通过，包含新JumpInput原入口调用计数、缩放/重复/空中/禁跳/未骑乘透传；直接下骑与静态上骑入口；30/60/144FPS鼠标目标角收敛和镜头方向不变、手动优先、未骑乘不处理；INI开关0/1重读。保留步态、B/读档、速度、座位、碰撞、牵引等回归。
+实际CommonLib安装链测试、当前EXE运动/相机/跳跃入口字节检查、MASM ABI检查通过。实际安装Menu Framework DLL配合生产Render完成50次保存/开关/重读检查。上述均不是游戏实测，不能证明所有第三方动画、物理效果或镜头表现已游戏验收。
+Motion.h SHA256=3F546E77FED1030D56E3C050C82FFE0E7F9DB8FA7E4E27A86AF2BE6C867C70F8
+RideHooks.h SHA256=7B10F72786D2EC0BC2DE4439563695E2DE43A1E605F1DFE6A904B7638EE332B7
+这两个文件、Seat实现、ESP、爬行动作、其他资源和MO2 profile不变。仍保留静态骑姿所需Dismount.nmp数据，不删除资源。
+
+部署
+目录：E:\iniRePather-Skyrim\Mod Organizer 2\mods\【实验室】NPC坐骑-ai编码
+仅NPCMounts.dll及NPCMounts.ini改变，原目录名不变。
+DLL SHA256=B7FFE628B4D5DABC8FF81A8470200FE7A6BC04F7B12549A4E95E66851093B003
+INI SHA256=DB2234E21968D33C736282D9E2C1FDD723B705CA0DDDAE181BE8FDD4E01BCEAD
+完整7024文件部署前备份：E:\iniRePather-Skyrim\Mod Organizer 2\backups\NPCMounts-no-transition-20261017-u
+_evidence另存原记录、profile、源码U及测试证据；build/ride-u保存快照与冻结计划。尚未游戏验收，未提交推送。
+
+针对性游戏复测：正常上骑直接进入骑姿；轻触不下骑、长按直接下骑；W/S移动保持步态；鼠标开/关与A/D辅助；Space时无玩家站起/人类跳跃，双方整体腾空且NPC爬行奔跑；空中长按下骑与B还原；菜单保存重读、读档后重新骑乘。

@@ -30,10 +30,12 @@ struct ActorEquipManager{TESObjectARMO* equipped=nullptr;unsigned unequips=0;sta
 };struct CombatGroup{};
 }
 namespace Mounts {bool Converted(RE::Actor*){return false;}}
+namespace Wardrobe {int restores=0;void Restore(RE::Actor*){++restores;}}
+namespace Crawl {void Remove(RE::FormID){}bool BindBound(RE::Actor*){return true;}}
 constexpr auto flagsMask=static_cast<RE::Actor::BOOL_FLAGS>((1u<<27)|(1u<<20)|(1u<<21));
 ${take('struct Binding {')};${take('enum class Phase ')};${take('struct Tether {')};
 std::mutex mutex;std::unordered_map<unsigned,Binding> bindings;std::unordered_map<unsigned,Tether> tethers;
-auto* cuffs=&RE::cuffArmor;bool hooksReady=true;unsigned deleted=0,freeze=0;
+auto* cuffs=&RE::cuffArmor;bool hooksReady=true,leashAvailable=true;unsigned deleted=0,freeze=0;
 void DeletePost(unsigned id){if(id)++deleted;}void StopTether(RE::Actor* a){tethers.at(a->id).wanted=false;}
 void Freeze(RE::Actor*,const Binding&){++freeze;}
 void StartTether(RE::Actor*,bool){}
@@ -43,7 +45,7 @@ ${take('bool Find(')}${take('bool Pacified(')}${take('bool HostileHook(')}${take
 int main(){RE::Actor a,b;b.id=2;Binding binding;binding.pacified=true;binding.ai=false;binding.life=0;binding.flags=1u<<20;binding.priorCuffs=2;binding.oldHands=4;
  a.data.boolFlags.value=unsigned(flagsMask)|(1u<<18);bindings[1]=binding;
  assert(!HostileHook(&a,&b)&&!HostileHook(&b,&a)&&!CombatHook(&a,&b,nullptr));
- assert(Release(&a));assert(bindings.empty()&&a.counts==2&&!a.ai&&a.life==RE::ACTOR_LIFE_STATE::kAlive);
+ assert(Release(&a));assert(bindings.empty()&&a.counts==2&&!a.ai&&a.life==RE::ACTOR_LIFE_STATE::kAlive&&Wardrobe::restores==1);
  assert(a.data.boolFlags.value==((1u<<18)|(1u<<20))&&RE::ActorEquipManager::GetSingleton()->equipped==&RE::oldArmor);
  assert(HostileHook(&a,&b)&&CombatHook(&a,&b,nullptr));a.hostile=false;assert(!HostileHook(&a,&b)); // restore dynamic relations, not force hostility
  auto writes=a.lifeWrites;auto unequips=RE::ActorEquipManager::GetSingleton()->unequips;Release(&a);assert(a.lifeWrites==writes&&a.counts==2&&RE::ActorEquipManager::GetSingleton()->unequips==unequips);

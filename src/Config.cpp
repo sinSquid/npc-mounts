@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Config.h"
+#include "Diagnostics.h"
 #include <charconv>
 #include <fstream>
 #include <mutex>
@@ -14,6 +15,7 @@ Data Read(const std::filesystem::path& path, bool* success) {
     std::ifstream in(path);
     if(success)*success=false;
     if(!in)return result;
+    bool logLevelRead=false,legacyDebug=false;
     std::string line;
     while (std::getline(in, line)) {
         if(line.starts_with("\xEF\xBB\xBF"))line.erase(0,3);
@@ -27,7 +29,10 @@ Data Read(const std::filesystem::path& path, bool* success) {
         for (const auto& field : floats) if (key == field.key) result.*field.member = number;
         for (const auto& field : bools) if (key == field.key && (number == 0.f || number == 1.f)) result.*field.member = number != 0.f;
         if (key == "DismountKey" && std::isfinite(number)) result.dismountKey = static_cast<int>(std::clamp(number,0.f,255.f));
+        if (key == "LogLevel" && std::isfinite(number)) {result.logLevel=static_cast<int>(std::clamp(number,0.f,4.f));logLevelRead=true;}
+        if (key == "DebugLog" && number == 1.f) legacyDebug=true;
     }
+    if(!logLevelRead)result.logLevel=legacyDebug?4:0;
     Normalize(result); if(success)*success=!in.bad(); return result;
 }
 bool Write(const std::filesystem::path& path, Data value) {
@@ -36,14 +41,17 @@ bool Write(const std::filesystem::path& path, Data value) {
     if (!out) return false;
     out.imbue(std::locale::classic());
     out << std::setprecision(std::numeric_limits<float>::max_digits10);
-    out << "; NPCMounts 0.4.2 - UTF-8; menu and INI use the same limits\n[Mounts]\n";
+    out << "; NPCMounts 0.4.4 - UTF-8; menu and INI use the same limits\n[Mounts]\n";
     for (const auto& f : bools) out << f.key << '=' << (value.*f.member ? 1 : 0) << '\n';
+    out << "; 0=关闭，1=仅错误，2=错误和警告，3=基础信息，4=完整诊断\nLogLevel=" << value.logLevel << '\n';
     for (const auto& f : floats) {
         out << std::setprecision(6) << "; range " << f.min << ".." << f.max << "; step " << f.step << '\n';
         out << std::setprecision(std::numeric_limits<float>::max_digits10) << f.key << '=' << value.*f.member << '\n';
     }
     out << "; 0 = current Activate binding; other values = keyboard scan code (decimal)\nDismountKey=" << value.dismountKey << '\n';
-    out.flush(); return out.good();
+    out.flush();
+    out.close();
+    return out.good();
 }
 Data Get() { std::scoped_lock lock(mutex); return current; }
 void Set(Data value) { Normalize(value); std::scoped_lock lock(mutex); current=value; }
@@ -63,9 +71,11 @@ void (*separator)(const char*){};
 void (__stdcall Render)() {
     static Data draft = Get();
     static std::string result;
-    text("NPC 坐骑 0.4.2 · 修改后点击保存并应用", nullptr);
+    text("NPC 坐骑 0.4.4 · 修改后点击保存并应用", nullptr);
     text("下骑恢复玩家速度；人魅-解除坐骑化与束缚恢复 NPC 原值。", nullptr);
     for (const auto& f : bools) checkbox(f.label, &(draft.*f.member));
+    separator("日志");
+    inputInt("日志级别（0关闭 / 1错误 / 2警告 / 3基础 / 4完整诊断）", &draft.logLevel, 1, 1, 0);
     separator("数值与座位");
     for (const auto& f : floats) {
         const auto label=fmt::format("{}（步长{:g}）###{}",f.label,f.step,f.key);
@@ -75,12 +85,13 @@ void (__stdcall Render)() {
     inputInt("下骑键扫描码（0=游戏交互键）", &draft.dismountKey, 1, 10, 0);
     if (button("保存并应用", {0,0})) {
         Normalize(draft);
-        if (Write(iniPath,draft)) { Set(draft); result="已保存 INI，游戏继续后应用"; }
+        const bool saved=Write(iniPath,draft);
+        if (saved) { Set(draft); Diagnostics::SetLevel(draft.logLevel); result="已保存 INI，游戏继续后应用"; }
         else result="写入 INI 失败；未应用，请检查文件权限";
     }
     if (button("从 INI 重新读取并应用", {0,0})) {
         bool success=false;const auto loaded=Read(iniPath,&success);
-        if(success){draft=loaded;Set(draft);result="已重新读取 INI";}
+        if(success){draft=loaded;Set(draft);Diagnostics::SetLevel(draft.logLevel);result="已重新读取 INI";}
         else result="读取 INI 失败；保留当前配置与未保存修改";
     }
     if (button("恢复默认值（尚未保存）", {0,0})) { draft=Data{}; result="默认值已填入，点击保存并应用生效"; }

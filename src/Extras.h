@@ -4,6 +4,7 @@ void Initialize();
 bool Handle(RE::FormID effect, RE::Actor* target);
 bool Matches(RE::FormID effect);
 bool Bound(RE::Actor* actor);
+bool BlockMovement(RE::Actor* actor);
 bool HoldAnchor(RE::Actor* actor);
 bool Leashed(RE::Actor* actor);
 bool Busy(RE::Actor* actor);

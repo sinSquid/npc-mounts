@@ -1,0 +1,26 @@
+NPCMounts 中间版本清理 — 2026-10-18
+授权：保留已验证稳定基线、最近两次回退、必要源码/日志，删除其余冗余中间版本；不影响部署和后续构建。
+
+保留的完整备份（目录名代表备份发生轮次，不是内部版本号）
+1. NPCMounts-riding-six-20261017-j：保存I版；DLL=5570C682D1E01189AC6D691CD4DE8F41B97F60F87CCAC39C2268DA132AD8E2DB。用户确认步态问题已改善的基线，不等于全部功能已验收。
+2. NPCMounts-camera-input-20261017-v：保存U版；DLL=B7FFE628B4D5DABC8FF81A8470200FE7A6BC04F7B12549A4E95E66851093B003。
+3. NPCMounts-root-takeoff-20261018-w：保存V版；DLL=2831F2CD5F4B181EDA9897A73EA279ECA168A1B19E0C3217F277B329A58B8834。
+三者位于E:\iniRePather-Skyrim\Mod Organizer 2\backups；当前W版在原Mod目录及build/Release中保留，不另造一份重复备份。
+
+删除和归档
+删除39个其余NPCMounts完整备份目录，以及源码build中的47个stage-/ride-目录，共86个，准确绝对路径与文件数/字节数列于下方manifest.json；未触碰其他Mod备份。
+删除前归档并逐条SHA256校验1,142项：旧备份_evidence中的654份源码/日志/清单、build暂存中的487份文本证据、原全局记录1份。旧DLL/重复动作/网格等中间二进制不归档，完整回退仅保留上述三份。
+归档E:\iniRePather-Skyrim\Mod Organizer 2\backups\NPCMounts-maintenance-history-20261018.zip
+归档11,214,805字节（约10.70MiB），SHA256=610BE14589FED030EC41C1C6E34DFDAE77FCC249D8978414CB745D718F44FD80。
+净释放19,722,183,536字节，约18.368GiB（不将回收站占用计作释放；本轮为实际删除）。除上述完整备份外，旧版本资源不能再整包恢复；历史文本可从ZIP提取，已提交源码仍在Git。
+
+构建与部署保护
+原test-native.ps1依赖被清理的build/stage-ride-k动作库，清理前将其复制到固定build/test-Crawl.nmc并修改默认参数；SHA256=93E5CCB93E81F29B2FBACCF7A590FEC0614A6006184104D1A156A9426DEA0172，与当前部署一致。
+保留build/test-Dismount.nmp、build/animations原始资源与生成输入、build/reference-l参考源码、依赖/配置/当前Release产物、src/tools/tests/assets/config/third_party/docs及Git，所有未提交源码仍在。
+清理后Release构建成功，30组完整离线回归及CommonLib安装链/EXE/MASM检查通过；无旧stage/ride目录依赖。未部署重新构建产物，不改变游戏功能。
+清理前后当前Mod全7024文件快照逐项相同，added/removed/changed均为空；DLL仍为W版5A3A9CA08B6177351A5DF207407666509CE9195B1B4FAD8BFA3BBF29E68BB956。INI、ESP、其他资源、目录名及profile均未变化。SKSE运行日志原目录保持。
+
+执行清单与验证日志
+C:\Users\admin\Documents\Codex\work\npcmounts-cleanup-20261018\manifest.json
+同目录result.json、cleanup.ps1、build-after.log、tests-after.log、deployed-before.json、deployed-after.json和原记录/profile。
+全局改动记录已更新对应84号条目，明确历史备份路径清理状态。本轮未提交推送；这只是存储清理，不称为游戏性能或骑乘Bug修复。

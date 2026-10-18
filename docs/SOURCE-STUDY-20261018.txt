@@ -1,0 +1,92 @@
+人形承载源码专题复核 — 2026-10-18
+扩展记录：同目录 SOURCE-STUDY-EXTENDED-20261018.md。现已按独立来源整理8个核心项目，原版/修复版、框架/消费者不重复计数；以下五项目保留为首次专题复核，不能据此当作五套独立实现。
+本轮仅学习、对照和记录，不修改运行源码、INI、ESP、DLL或动画，不构建、不部署、不追加“已优化”记录。
+这是以下版本的骑乘核心路径复核，不是声称五个仓库全部代码已审计，也不是当前游戏Bug已定位完毕。
+
+一、实际阅读的五个项目及版本
+
+1. Piggyback — e58d1b0b4819d30459af6722eee94c4d0f31b8b3
+   来源 https://github.com/Kroosstiich/piggyback
+   本地 D:\Codex\work\npc-mounts-ref-20261013\piggyback
+   阅读src/hook.cpp的整个Update/Install，以及src/Piggyback.cpp的Attach(469)、SetOffset(525)、Detach(542)、UpdateAll(656)、控制器/碰撞处理(276—439)、缩放和坐标函数(441—466)；src/Piggyback.h与plugin.cpp。
+   调用：原PlayerCharacter::Update -> UpdateAll -> 解析载体实际节点 -> ComputeTarget -> SetPosition(target,true) -> SetAngle。被承载者的位置在引用/控制器层更新，而非仅挪动显示骨盆。
+   被承载者每帧清零速度/坠落累计；载体防推、被承载者人物碰撞、Attach中的SetCollision(false)及Detach恢复是一套配合流程。不能只凭注释就把它等同于当前pair-filter；也不能把NeutraliseControllerMotion用于仍负责走跑跳的当前玩家控制器。
+   坐标：节点世界位置提供原点，偏移按载体朝向旋转，不直接沿脊椎骨局部轴。缩放测量缓存，尺寸变化时重测，避免动画节点高度变化让偏移“呼吸”。这些是该实现的选择，不是当前爬行姿态下已验证正确的参数。
+   边界：此快照CMake声明1.2.1；UpdateAll挂在玩家更新之后，不自动证明任意NPC载体的模型也已更新到本帧最后状态。没有本项目“玩家控制器留在地面、玩家显示身体移到NPC背上”的对应证明。
+
+2. Ride Along — 7b8ec1a55d6f378b44c637117645ab0f59b1def5
+   来源 https://github.com/Theslushbeast/RideAlong
+   本地 E:\code-lib\me\npc-mounts\build\reference-l\RideAlong
+   阅读src/main.cpp：CollectBones/CopyPose(544—578)、BuildSyncList/SyncGraphVars(581—636)、Place(790—843)、Board(870—911)、PlaceTrip(1292—1316)、StartTrip(1318—1396)、EndTrip(1399—1463)、TickTrip(1466—1555)、Tick(1723—1851)、CameraHook(1854—1872)、MovementHook(1875—1919)。
+   普通乘客：实际马负责移动；分离乘客CharController；根据实际SaddleBone世界位置摆放乘客；MovementHook只拦乘客自主位移；CameraHook在原相机更新后调用Tick。
+   玩家作为乘客：StartTrip关闭Movement/Fighting/Sneaking/Jumping控制，分离玩家CharController；马由Travel package驱动；PlaceTrip直接设置玩家与同乘者的引用位置和朝向。它不是“玩家原控制器继续驱动组合体”的实现。
+   姿态：先设置OAR标记，再发送默认HorseEnterInstant；监测bIsRiding，丢失时重新进入。CopyPose按名称选择骨骼并跳过Root/Camera等，不是无条件复制固定99轨。
+   下骑：结束姿态、归还控制、移到地面、恢复物理是配套流程；EndTrip内存在延迟任务和物理重建兜底。不能照抄一条DetachCharController而省略还原，也不能把源码中的100/300ms等待当作本机已证明必要的延迟。
+   边界：其玩家乘客模式是AI马带人旅行，不提供本项目手动W/S、A/D及NPC爬行组合跳跃的直接实现。它的更新时点是相机更新之后，不能和当前hkbBehaviorGraph输出阶段混称“每帧更新，所以等价”。
+
+3. RSE 原版 — f29299b68f89dcd669d6180b5303e24585b28b68
+   来源 https://github.com/Hunk92/RSE-Shoulder-Or-Saddle
+   本地 E:\code-lib\me\npc-mounts\build\reference-l\RSE
+   阅读RSE Player/src/main_v7.1_RSE-P.cpp的AttachmentData、UpdateActorPosition(60—125)、UpdateHook(128—152)、StartAttachmentPlayer(155—218)、StopAttachmentPlayer(221—243)及Papyrus注册；ActorCollisionManagerRSE-P.cpp的Install、控制器标志函数和完整Hook_ApplyMovementDelta/Hook_Collision。
+   原玩家Update返回后更新承载对象位置。公式中actorAWorldPos+(nodeWorldPos-actorAWorldPos)相消，本质为节点世界位置+旋转后的偏移，不是三段独立的跟随补偿。
+   使用SetPosition(targetPos,false)+Update3DPosition(false)，而Piggyback使用SetPosition(true)。两者的物理组织不同，不能选取一个的false、另一个的碰撞标志再当作已验证组合。
+   原版保留裸Actor/节点指针，碰撞钩子及恢复有历史局限；不能因为功能相近就把原版当作无缺陷标杆。其原生注册入口也不是本项目骑乘姿态控制器。
+
+4. RSE 非官方修复 — 4294a8644dd693ca58f3b8d46095e18724a28398
+   来源 https://github.com/Kroosstiich/Unofficial-Fix-RSE-Shoulder-Or-Saddle
+   本地 E:\code-lib\me\npc-mounts\build\reference-l\RSE-Fix
+   阅读RSE Player/src/main_v7.1_RSE-P.cpp：UpdateActorPosition(58—134)、UpdateHook(137—162)、StartAttachmentPlayer(165—232)、StopAttachmentPlayer(236—251)及共享状态；RSE Horse/src/ActorCollisionManagerRSE-FH.cpp的MakeActorGhost、ReattachActorToHavok和IsAttachedActor/Hook_ApplyMovementDelta(557—600)。
+   相对原版采用ActorHandle、计数节点引用、Get3D(false)、模型替换后重新解析节点，以及共享数据锁；Stop原生接口签名与PSC对齐，先撤销绑定状态再恢复碰撞。
+   移动钩子仅跳过当前附着者，其他角色走原处理；不让全局“安全判定”把无关NPC移动吞掉。
+   该分支还包含Havok分离/重建、锁、SEH、限频等大量特定历史修补。值得参考的是约束范围和恢复职责，不是整体搬入这些保护代码。它是RSE派生，不算独立验证当前方案的第二份证据。
+
+5. Carry Them — 39199d50a5e4e3fdba843073596a82ffcfafe94e
+   来源 https://github.com/Kroosstiich/Carry-Them
+   本地 E:\code-lib\me\npc-mounts\build\reference-l\Carry-Them
+   完整阅读Scripts/Source/CT_Control.psc(1—169)及CT_PlayerAlias.psc。
+   玩家是载体、NPC是乘客，方向与当前需求相反。Settle限制乘客移动、保留AI更新、施加OAR姿态标记、设置Restrained；玩家携带姿势依赖Offset Movement Animation/OffsetGPMA行为支持，不是只替换一个普通idle。
+   Drop先清Alias以避免重复执行，再停携带姿态、解除Piggyback、恢复乘客状态；Reload重新建立运行期绑定。
+   OnKeyDown的Jump用途是Drop，不是“载体跳、乘客保持坐姿”的组合跳跃实现。
+   明确版本缺口：CanCarry要求Piggyback>=10202，并调用ApproachAndAttach/SetTurnSmoothing/SetRotationOffset/SetHostCollision；本地Piggyback1.2.1快照没有这些对应API。因此不能声称这两份本地快照可以直接组合运行。
+
+项目数量与来源独立性
+五个项目不是五套独立底层方案：Carry Them依赖Piggyback，RSE-Fix派生自RSE，Ride Along也在移动约束处明确参考RSE。应按实现和依赖前提取证，不能用“五个仓库都看过”代替兼容性论证。
+另阅读HorseMovementFix的HFVRHorseFixScript.psc：它只根据bIsRiding切换VR手柄方向INI，不能作为SE人形承载核心参考，不计入上述五项。TDM的转向代码只作辅助：原函数同时处理AIProcess角速度、SetHeading和freeRotation，截取最后两行不足以证明当前输入路径兼容。
+
+二、与当前代码真正不同的地方
+
+A. 控制权与角色
+参考路径的载体移动、乘客绑定通常是不同对象，乘客的自主移动受到约束。
+当前src/plugin.cpp:347 Mount保留玩家CharController并把玩家引用放到NPC脚下；144 SyncMount让NPC跟随玩家引用；560 NPCUpdate阻止NPC自身位移；src/Seat.cpp:88 GeneratePose又把玩家显示骨盆放到NPC背部。
+依赖链是“玩家物理位置 -> NPC位置/爬行姿态 -> 玩家显示座位”。这不是上述参考的乘客绑定链。它不因用了相同SetPosition/MovementDelta函数就变成同一种机制。
+结论：当前方案把玩家当作移动驱动者，同时又要呈现成独立乘客。能否同时满足这两个角色，需要完整图更新/物理/动画所有权证明；五份源码没有替当前结构提供这项证明。
+
+B. 动画状态不等于输入事件，也不等于一个输出缓冲
+当前玩家仍是普通人形走跑跳的物理驱动者；Mount发送IdleForceDefaultState，而不是完整进入参考实现的乘客姿态路径。
+JumpInput截断的是事件处理；控制器进入空中之后，引擎动画图仍可能由状态反馈进入人类跳跃。仅拦Space不是“最终画面绝不出现人类跳跃”的证明。
+Seat::GeneratePose替换一份匹配图的输出，不自动证明它是最终可见图/混合/IK/物理更新之后的姿态。seatWrites能证明回调执行，不能证明最终帧完全由它控制。
+后续必须区分：输入请求、物理起跳、动画状态转移、输出覆盖、最终渲染姿态。原先测试混淆了这些层次。
+
+C. “同一帧”不是足够的时序条件
+Piggyback/RSE在原玩家Update之后绑定；Ride Along在原相机Update之后放置；当前Seat发生在行为图Generate中，NPC在另一个Actor::Update里被同步。
+参考源码能证明自己的调用先后，不能证明当前多插件环境中谁最后写姿态/世界矩阵。不同阶段取得的节点坐标不能因都在某一帧就直接混用。
+后续需要实证当前载体根/背部节点、乘客位置和姿态提交来自同一有效时点，而不是再增加平滑系数掩盖差异。
+
+D. 根轨道保留/覆盖没有跨结构的通用答案
+Ride Along选择性复制骨骼且排除Root/Camera，是其完整乘客方案的一部分。
+当前把骨盆移到另一个角色背上，再恢复原生Root/辅助轨道，是不同的组合。不能因为已提交版或参考项目保留Root，就推出W版保留Root必然正确；反向强制覆盖Root也一样没有这种保证。
+S回归首先必须在控制权和最终姿态链中定位，不能继续把这一布尔条件来回切换当作修复策略。
+
+三、后续实施前必须补齐的条件（本轮不实施）
+
+1. 明确唯一的移动驱动对象，以及玩家究竟是普通人形驱动者还是被绑定的乘客；不能混用两套角色前提。
+2. 选定与角色一致的绑定/动画完整链，列出进入、持续、跳跃、后退、退出、B还原和读档各阶段的唯一写入者。
+3. 确认可见玩家骨架/活动动画图与最终写入阶段，不能只验证一个可写缓冲区。
+4. 回归必须能用实际前进/后退/跨帧跳跃轨迹区分旧错与新对，并检测其他模块再次写入后的结果；仅把自己预期写进替身测试不算证明。
+5. 若采用真正NPC驱动/玩家乘客的方式，NPC手动移动、组合跳跃、相机和完整控制器恢复仍须另外核实。Ride Along的AI马旅行并未解决这些需求，不能宣称直接搬来即可完成。
+6. 只借鉴机制时不新增前置；直接复用代码时先核对许可和本机1.5.97 ABI。RSE的公开仓库不是可任意复制全部代码的许可证明；也不复制其他运行版本的裸地址、碰撞接口或保护层。
+
+四、本轮交付边界
+新增本研究记录，未改运行代码、测试代码、Mod文件或全局优化记录；未构建、未部署、未创建中间整包备份。
+当前DLL仍为W版SHA256=5A3A9CA08B6177351A5DF207407666509CE9195B1B4FAD8BFA3BBF29E68BB956。
+当前三个画面问题仍按用户反馈记为未解决；上述结构差异是后续论证依据，不冒充已证明的完整根因。

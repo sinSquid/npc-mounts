@@ -1,12 +1,15 @@
 #include "pch.h"
 #include "Extras.h"
+#include "Wardrobe.h"
+#include "Crawl.h"
+#include "Diagnostics.h"
 #include "MinHook.h"
 #include <array>
 #include <mutex>
 #include <unordered_map>
 #include <functional>
 #include <atomic>
-namespace Mounts {bool Converted(RE::Actor*);bool Convert(RE::Actor*);bool Riding(RE::Actor*);bool Restoring(RE::Actor*);}
+namespace Mounts {bool Converted(RE::Actor*);bool Riding(RE::Actor*);bool Restoring(RE::Actor*);void Restore(RE::Actor*);}
 namespace Extras {
 namespace {
 constexpr auto flagsMask=static_cast<RE::Actor::BOOL_FLAGS>((1u<<27)|(1u<<20)|(1u<<21));
@@ -41,18 +44,28 @@ using Hostile=bool(*)(RE::Actor*,RE::Actor*);
 using Combat=bool(*)(RE::Actor*,RE::Actor*,RE::CombatGroup*);
 Hostile originalHostile{};Combat originalCombat{};
 
-void Notify(const char* text){RE::SendHUDMessage::ShowHUDMessage(text);}
+void Notify(const char* text){Diagnostics::Trace("Notice: {}",text);RE::SendHUDMessage::ShowHUDMessage(text);}
 bool Find(RE::FormID id,Binding& out){std::scoped_lock lock(mutex);auto it=bindings.find(id);if(it==bindings.end())return false;out=it->second;return true;}
 bool Pacified(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b)&&b.pacified;}
 bool Ready(RE::Actor* actor){
     auto* cell=actor->GetParentCell();
     return cell&&cell->IsAttached()&&actor->Get3D();
 }
+bool SameSpace(RE::TESObjectCELL* first,RE::TESObjectCELL* second){
+    if(!first||!second)return false;
+    if(first==second)return true;
+    auto* world=first->GetRuntimeData().worldSpace;
+    return world&&world==second->GetRuntimeData().worldSpace;
+}
 bool Displaced(RE::Actor* actor,const Binding& b){
     auto* cell=actor->GetParentCell();
     if(!cell)return true;
+    if(cell->GetFormID()!=b.cell){
+        auto* oldCell=RE::TESForm::LookupByID<RE::TESObjectCELL>(b.cell);
+        if(!SameSpace(cell,oldCell))return true;
+    }
     const auto delta=actor->GetPosition()-b.position;
-    return cell->GetFormID()!=b.cell||delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>32.f*32.f;
+    return delta.x*delta.x+delta.y*delta.y+delta.z*delta.z>32.f*32.f;
 }
 bool HostileHook(RE::Actor* self,RE::Actor* target){return Pacified(self)||Pacified(target)?false:originalHostile(self,target);}
 bool CombatHook(RE::Actor* self,RE::Actor* target,RE::CombatGroup* group){return Pacified(self)||Pacified(target)?false:originalCombat(self,target,group);}
@@ -61,65 +74,91 @@ void Freeze(RE::Actor* actor,const Binding& b){
     // Never relocate across cells or rewrite a loader's SetPosition call.
     // A queued character may still hold the old cell's loading state.
     auto* cell=actor->GetParentCell();
-    if(!cell||cell->GetFormID()!=b.cell||!cell->IsAttached()||!actor->Get3D())return;
+    if(!cell||!cell->IsAttached()||!actor->Get3D())return;
     if(auto* cc=actor->GetCharController())cc->SetLinearVelocityImpl(RE::hkVector4());
 }
-bool Eligible(RE::Actor* actor){
-    return actor&&!actor->IsPlayerRef()&&!actor->IsDead()&&!Mounts::Restoring(actor)&&actor->GetParentCell()&&actor->Get3D()&&actor->Get3D()->GetObjectByName("NPC Spine2 [Spn2]")&&
-        !actor->IsInKillMove()&&!actor->GetOccupiedFurniture()&&!actor->IsOnMount();
+bool Eligible(RE::Actor* actor,bool humanoid=true){
+    RE::NiPointer<RE::Actor> nativeMount;
+    return actor&&!actor->IsPlayerRef()&&!actor->IsDead()&&!Mounts::Restoring(actor)&&actor->GetParentCell()&&actor->Get3D()&&(!humanoid||actor->Get3D()->GetObjectByName("NPC Spine2 [Spn2]"))&&
+        !actor->IsInKillMove()&&actor->AsActorState()->GetSitSleepState()==RE::SIT_SLEEP_STATE::kNormal&&!actor->GetMount(nativeMount);
 }
 void DeletePost(RE::FormID id){if(auto* ref=RE::TESForm::LookupByID<RE::TESObjectREFR>(id)){ref->Disable();ref->SetDelete(true);}}
 bool Bind(RE::Actor* actor,bool pacify){
-    if(!leashAvailable){Notify("固定坐骑及束缚敌对目标需要启用LeashFramework及Leash.esm");return false;}
-    if(!hooksReady||!postBase||!cuffs){Notify("束缚功能未初始化，请查看NPCMounts日志");return false;}
+    Diagnostics::Snapshot(actor,pacify?"Capture requested":"Anchor requested");
+    Diagnostics::Trace("Bind converted={} bound={} busy={} ridden={}",Mounts::Converted(actor),Bound(actor),Busy(actor),Mounts::Riding(actor));
+    Binding existing;if(actor&&Find(actor->GetFormID(),existing)){
+        if(existing.pacified!=pacify){Notify(pacify?"目标已处于固定状态，请先解除固定":"目标已处于捕获状态，请使用人魅-捕获或统一解除");return false;}
+        Release(actor);Notify(pacify?"已解除捕获并恢复原状态":"已解除固定");return true;
+    }
+    const bool converted=Mounts::Converted(actor);
+    if(!pacify&&!converted){Notify("人魅-固定NPC只对已转换的坐骑NPC有效");return false;}
+    if(!pacify&&!leashAvailable){Notify("人魅-固定NPC需要启用LeashFramework及Leash.esm");return false;}
+    if(!hooksReady||!cuffs||(!pacify&&!postBase)){Notify("束缚功能未初始化，请查看NPCMounts日志");return false;}
     if(!pacify&&Eligible(actor)&&Leashed(actor)&&!Bound(actor)&&!Mounts::Riding(actor)){
         tethers.at(actor->GetFormID()).anchorAfterDisconnect=true;StopTether(actor);
         Notify("正在把玩家牵引绳改接到固定桩");return true;
     }
-    if(!Eligible(actor)||Bound(actor)||Busy(actor)||Mounts::Riding(actor)){Notify("目标状态不允许束缚；请先下骑并解除牵引");return false;}
-    if(pacify ? !actor->IsHostileToActor(RE::PlayerCharacter::GetSingleton()) : !Mounts::Converted(actor)){
-        Notify(pacify?"人魅-束缚敌对目标只对敌对人形NPC有效":"人魅-固定坐骑只对已转换的坐骑NPC有效");return false;
+    if(!Eligible(actor,!pacify)||Busy(actor)||Mounts::Riding(actor)){
+        Diagnostics::Snapshot(actor,"Bind rejected");
+        Notify("目标状态不允许束缚；请先下骑并解除牵引");return false;
     }
     const auto life=actor->AsActorState()->GetLifeState();
-    if(life!=RE::ACTOR_LIFE_STATE::kAlive&&life!=RE::ACTOR_LIFE_STATE::kRestrained)return false;
-    auto prop=actor->PlaceObjectAtMe(postBase,true);if(!prop){Notify("固定桩生成失败，未改变目标");return false;}
-    if(pacify&&!Mounts::Converted(actor)&&!Mounts::Convert(actor)){DeletePost(prop->GetFormID());return false;}
+    if(life!=RE::ACTOR_LIFE_STATE::kAlive&&life!=RE::ACTOR_LIFE_STATE::kRestrained){Diagnostics::Trace("Bind rejected life={}",static_cast<unsigned>(life));return false;}
+    if(converted){Mounts::Restore(actor);if(Mounts::Converted(actor)){Notify("坐骑仍在还原，稍后重试固定或捕获");return false;}}
+    auto prop=pacify?RE::NiPointer<RE::TESObjectREFR>{}:actor->PlaceObjectAtMe(postBase,true);if(!pacify&&!prop){Notify("固定桩生成失败，未改变目标");return false;}
     Binding b;b.cell=actor->GetParentCell()->GetFormID();b.position=actor->GetPosition();b.angle=actor->GetAngle();b.pacified=pacify;
     b.flags=actor->GetActorRuntimeData().boolFlags.underlying()&static_cast<std::uint32_t>(flagsMask);b.life=static_cast<unsigned>(actor->AsActorState()->GetLifeState());b.ai=actor->IsAIEnabled();
     b.teammate=actor->IsPlayerTeammate();b.teammateSaved=true;
     if(auto* old=actor->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kHands))b.oldHands=old->GetFormID();
     const auto counts=actor->GetInventoryCounts([&](RE::TESBoundObject& object){return &object==cuffs;});
     if(auto it=counts.find(cuffs);it!=counts.end())b.priorCuffs=std::max(0,it->second);
-    {
+    if(prop){
         b.post=prop->GetFormID();const float yaw=b.angle.z;
         prop->SetPosition(b.position+RE::NiPoint3{std::cos(yaw)*80.f,-std::sin(yaw)*80.f,0});prop->SetAngle(b.angle);
     }
     {std::scoped_lock lock(mutex);bindings.emplace(actor->GetFormID(),b);}
+    Diagnostics::Trace("Binding created target={:08X} post={:08X} pacified={} position=({},{},{})",actor->GetFormID(),b.post,b.pacified,b.position.x,b.position.y,b.position.z);
+    if(pacify)Wardrobe::Capture(actor,false);
     actor->AddObjectToContainer(cuffs,nullptr,1,nullptr);
     RE::ActorEquipManager::GetSingleton()->EquipObject(actor,cuffs,nullptr,1,nullptr,false,true,false,true);
     actor->StopCombat();actor->EnableAI(true);actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);actor->GetActorRuntimeData().boolFlags.set(flagsMask);
     actor->NotifyAnimationGraph("SprintStop");actor->NotifyAnimationGraph("moveStop");
-    HoldAnchor(actor);StartTether(actor,true);
-    spdlog::info("Bound ref={:08X} type={} cell={:08X} teammate={}",actor->GetFormID(),pacify?"D":"C",b.cell,b.teammate);
-    Notify(pacify?"目标已坐骑化并停止敌对，正在连接固定桩绳索":"正在连接固定桩绳索");return true;
+    if(!Crawl::BindBound(actor))actor->NotifyAnimationGraph("IdleBoundStandingStart");
+    if(!pacify){HoldAnchor(actor);StartTether(actor,true);}
+    spdlog::info("Bound ref={:08X} type={} cell={:08X} teammate={}",actor->GetFormID(),pacify?"capture":"fixed-human",b.cell,b.teammate);
+    Notify(pacify?"目标已捕获并捆绑":"坐骑已恢复人形，正在连接固定桩绳索");return true;
 }
 
 struct Result final:RE::BSScript::IStackCallbackFunctor {
     std::function<void(bool)> done;
     bool holder;
-    explicit Result(std::function<void(bool)> fn,bool owner):done(std::move(fn)),holder(owner){}
+    Diagnostics::Context context=Diagnostics::current;
+    std::uint64_t request=++Diagnostics::sequence;
+    const char* function;bool trace; // Call sites use static function-name literals.
+    explicit Result(std::function<void(bool)> fn,bool owner,const char* name,bool record):done(std::move(fn)),holder(owner),function(name),trace(record){}
     void operator()(RE::BSScript::Variable result)override{
         // A missing/invalid Boolean result is not a successful disconnect.
         // Leave the request pending for the bounded watchdog instead.
-        if(holder ? (!result.IsObject()&&!result.IsNoneObject()) : !result.IsBool())return;
+        Diagnostics::Scope operation(context);
+        if(holder ? (!result.IsObject()&&!result.IsNoneObject()) : !result.IsBool()){
+            Diagnostics::Trace("VM callback request={} function={} invalid-type; existing watchdog retained",request,function);return;
+        }
         auto fn=done;const bool value=holder ? (result.IsObject()&&result.Unpack<RE::Actor*>()==RE::PlayerCharacter::GetSingleton()) : result.IsBool()&&result.GetBool();
-        SKSE::GetTaskInterface()->AddTask([fn=std::move(fn),value]{fn(value);});
+        if(trace)Diagnostics::Trace("VM callback request={} function={} value={}",request,function,value);
+        SKSE::GetTaskInterface()->AddTask([fn=std::move(fn),value,context=context]{Diagnostics::Scope operation(context);fn(value);});
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&)override{}
 };
 template<class... Args> bool Call(const char* function,std::function<void(bool)> done,Args... args){
-    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> result{new Result(std::move(done),std::string_view(function)=="GetLeashHolder")};
-    return RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("LeashFramework",function,RE::MakeFunctionArguments(std::move(args)...),result);
+    const bool query=std::string_view(function)=="IsLeashed"||std::string_view(function)=="GetLeashHolder";
+    const bool trace=!query||Diagnostics::Sample(4,2000);
+    auto* callback=new Result(std::move(done),std::string_view(function)=="GetLeashHolder",function,trace);
+    const auto request=callback->request;
+    RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> result{callback};
+    if(trace)Diagnostics::Trace("VM request={} function={}",request,function);
+    const bool dispatched=RE::BSScript::Internal::VirtualMachine::GetSingleton()->DispatchStaticCall("LeashFramework",function,RE::MakeFunctionArguments(std::move(args)...),result);
+    if(trace||!dispatched)Diagnostics::Trace("VM dispatch request={} function={} accepted={}",request,function,dispatched);
+    return dispatched;
 }
 bool Current(RE::FormID id,std::uint64_t token){const auto it=tethers.find(id);return it!=tethers.end()&&it->second.token==token;}
 void FailTether(Tether& tether){
@@ -133,6 +172,7 @@ void StopTether(RE::Actor* actor){
     if(!leashAvailable){tethers.erase(it);return;}
     it->second.phase=Phase::Stopping;it->second.pending=true;it->second.elapsed=0;const auto token=it->second.token;
     if(!Call("DisconnectLeash",[id,token](bool removed){
+        Diagnostics::Trace("Disconnect callback target={:08X} token={} removed={} current={}",id,token,removed,Current(id,token));
         if(!Current(id,token))return;
         if(removed){
             const bool anchor=tethers.at(id).anchorAfterDisconnect;tethers.erase(id);
@@ -148,22 +188,25 @@ void StopTether(RE::Actor* actor){
 }
 void StartTether(RE::Actor* actor,bool anchor){
     if(!leashAvailable){Notify("人魅-牵引坐骑需要启用LeashFramework及Leash.esm");return;}
-    if(!Eligible(actor)||!Mounts::Converted(actor)||(!anchor&&Bound(actor))||Busy(actor)||Mounts::Riding(actor)){
+    if(!Eligible(actor)||(anchor?!Bound(actor):!Mounts::Converted(actor))||(!anchor&&Bound(actor))||Busy(actor)||Mounts::Riding(actor)){
         Notify("目标状态不允许连接牵引绳");return;
     }
     const auto id=actor->GetFormID();const auto handle=actor->GetHandle();const auto token=++serial;
+    Diagnostics::Trace("Tether start target={:08X} token={} anchor={}",id,token,anchor);
     tethers.emplace(id,Tether{Phase::Checking,true,token});tethers.at(id).born=leashEventsSeen.load();tethers.at(id).pending=true;tethers.at(id).anchor=anchor;
     if(!Call("IsLeashed",[id,handle,token](bool occupied){
+        Diagnostics::Trace("Tether occupancy target={:08X} token={} occupied={} current={}",id,token,occupied,Current(id,token));
         if(!Current(id,token))return;auto ref=handle.get();
         const bool anchor=tethers.at(id).anchor;
-        if(occupied||!ref||!tethers.at(id).wanted||!Eligible(ref.get())||!Mounts::Converted(ref.get())){tethers.erase(id);if(anchor&&ref)Release(ref.get());if(occupied)Notify("目标已有其他牵引，未覆盖；请先解除原牵引");return;}
+        if(occupied||!ref||!tethers.at(id).wanted||!Eligible(ref.get())||(anchor?!Bound(ref.get()):!Mounts::Converted(ref.get()))){tethers.erase(id);if(anchor&&ref)Release(ref.get());if(occupied)Notify("目标已有其他牵引，未覆盖；请先解除原牵引");return;}
         tethers.at(id).phase=Phase::Applying;tethers.at(id).elapsed=0;
         auto complete=[id,handle,token,anchor](bool applied){
+            Diagnostics::Trace("Tether apply target={:08X} token={} anchor={} applied={} current={}",id,token,anchor,applied,Current(id,token));
             if(!Current(id,token))return;
             if(!applied){tethers.erase(id);if(anchor)if(auto ref=handle.get())Release(ref.get());Notify("LeashFramework未能创建牵引绳，固定已撤回，请查看日志");return;}
             auto ref=handle.get();tethers.at(id).phase=Phase::Active;tethers.at(id).pending=false;tethers.at(id).elapsed=0;
             if(!ref){tethers.erase(id);return;}
-            if(!tethers.at(id).wanted||!Eligible(ref.get())||!Mounts::Converted(ref.get())){StopTether(ref.get());return;}
+            if(!tethers.at(id).wanted||!Eligible(ref.get())||(anchor?!Bound(ref.get()):!Mounts::Converted(ref.get()))){StopTether(ref.get());return;}
             // Keep humanoid crawl locomotion: no ragdoll pull.
             Call("SetRagdollOverride",[](bool){},ref.get(),0);
             if(!anchor){
@@ -176,7 +219,7 @@ void StartTether(RE::Actor* actor,bool anchor){
         if(anchor){
             Binding b;
             auto* post=Find(id,b)?RE::TESForm::LookupByID<RE::TESObjectREFR>(b.post):nullptr;
-            if(post&&post->GetParentCell()==ref->GetParentCell()){
+            if(post&&SameSpace(post->GetParentCell(),ref->GetParentCell())){
                 const auto p=post->GetPosition()+RE::NiPoint3{0,0,48};
                 dispatched=Call("ApplyStandaloneLeashAtPosition",complete,ref.get(),post->GetParentCell(),p.x,p.y,p.z,std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,0.f,0.f,8.f);
             }
@@ -187,6 +230,7 @@ void StartTether(RE::Actor* actor,bool anchor){
     },actor)){tethers.erase(id);Notify("无法访问LeashFramework脚本接口");}
 }
 void Unleashed(RE::FormID id,std::uint64_t epoch,std::uint64_t sequence){
+    Diagnostics::Trace("Unleash event target={:08X} epoch={} sequence={} currentEpoch={}",id,epoch,sequence,session.load());
     if(session.load()!=epoch)return;auto it=tethers.find(id);
     if(it!=tethers.end()&&it->second.born<sequence&&it->second.phase!=Phase::Applying&&it->second.phase!=Phase::Checking&&!it->second.pending)tethers.erase(it);
 }
@@ -201,6 +245,13 @@ struct LeashEvents final:RE::BSTEventSink<SKSE::ModCallbackEvent>{
 } leashEvents;
 }
 bool Bound(RE::Actor* actor){Binding b;return actor&&Find(actor->GetFormID(),b);}
+bool BlockMovement(RE::Actor* actor){
+    Binding b;
+    if(!actor||!Find(actor->GetFormID(),b)||b.releaseRequested||actor->IsDead()||!Ready(actor))return false;
+    if(!b.pacified&&(!b.post||Displaced(actor,b)))return false;
+    Freeze(actor,b); // Cancel residual velocity before, not only after, native movement.
+    return true;
+}
 bool HoldAnchor(RE::Actor* actor){
     if(!actor)return false;
     {std::scoped_lock lock(mutex);auto it=bindings.find(actor->GetFormID());if(it==bindings.end()||!it->second.post)return false;
@@ -226,6 +277,9 @@ bool Release(RE::Actor* actor){
         if(auto it=counts.find(cuffs);it!=counts.end()&&it->second>static_cast<int>(b.priorCuffs))actor->RemoveItem(cuffs,1,RE::ITEM_REMOVE_REASON::kRemove,nullptr,nullptr);
         if(auto* old=RE::TESForm::LookupByID<RE::TESObjectARMO>(b.oldHands))equip->EquipObject(actor,old,nullptr,1,nullptr,false,false,false,true);
     }
+    if(b.pacified)Wardrobe::Restore(actor);
+    Crawl::Remove(id);
+    Diagnostics::Trace("Binding released target={:08X} post={:08X} pacified={} ropePending={}",id,b.post,b.pacified,Busy(actor));
     DeletePost(b.post);auto& flags=actor->GetActorRuntimeData().boolFlags;flags.reset(flagsMask);flags.set(static_cast<RE::Actor::BOOL_FLAGS>(b.flags));
     if(b.teammateSaved){auto& bits=actor->GetActorRuntimeData().boolBits;bits.reset(RE::Actor::BOOL_BITS::kPlayerTeammate);if(b.teammate)bits.set(RE::Actor::BOOL_BITS::kPlayerTeammate);}
     if(!actor->IsDead()&&(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained||
@@ -271,11 +325,13 @@ void Tick(float delta){
         if(b.post){
             // A failed preflight, external disconnect or a missing saved rope
             // must not leave an invisible, permanent movement restriction.
-            if(!Busy(actor)||tethers.at(id).phase==Phase::Failed){Release(actor);continue;}
+            if((!b.pacified&&!Busy(actor))||(Busy(actor)&&tethers.at(id).phase==Phase::Failed)){Release(actor);continue;}
             auto* cell=actor->GetParentCell();
             if(Displaced(actor,b)){
                 if(cell&&cell->IsAttached()&&actor->Get3D()){
                     spdlog::warn("Anchor bypassed ref={:08X} oldCell={:08X} newCell={:08X}; releasing without cross-cell MoveTo",id,b.cell,cell->GetFormID());
+                    const auto shift=actor->GetPosition()-b.position;
+                    Diagnostics::Trace("Anchor displacement target={:08X} delta=({},{},{})",id,shift.x,shift.y,shift.z);
                     Release(actor);Notify("其他移动绕过固定，已安全解除固定；未强制传回旧地点");
                 }continue;
             }
@@ -284,14 +340,15 @@ void Tick(float delta){
         actor->GetActorRuntimeData().boolFlags.set(flagsMask);
         if(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kAlive)actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);
         Freeze(actor,b);
+        Crawl::UpdateBound(actor,delta);
         if(b.pacified&&actor->IsInCombat())actor->StopCombat();
     }
     poll-=delta;if(poll>0)return;poll=1.f;
     std::vector<RE::FormID> ids;for(const auto& [id,t]:tethers)ids.push_back(id);
     for(auto id:ids){auto it=tethers.find(id);if(it==tethers.end())continue;auto* actor=RE::TESForm::LookupByID<RE::Actor>(id);if(!actor)continue;
         if(it->second.phase==Phase::Failed)continue;
-        if(it->second.phase==Phase::Reconciling){if((Bound(actor)&&!it->second.anchor)||!Mounts::Converted(actor))it->second.wanted=false;CheckTether(actor);continue;}
-        if(!it->second.wanted||actor->IsDead()||!Mounts::Converted(actor)){StopTether(actor);continue;}
+        if(it->second.phase==Phase::Reconciling){if((it->second.anchor?!Bound(actor):!Mounts::Converted(actor)))it->second.wanted=false;CheckTether(actor);continue;}
+        if(!it->second.wanted||actor->IsDead()||(it->second.anchor?!Bound(actor):!Mounts::Converted(actor))){StopTether(actor);continue;}
         if(it->second.phase==Phase::Active)CheckTether(actor);
     }
 }
@@ -307,8 +364,13 @@ void ToggleTether(RE::Actor* actor,bool releaseOnly=false){
     if(releaseOnly)Notify("目标没有本Mod创建的牵引");else StartTether(actor);
 }
 bool Handle(RE::FormID effect,RE::Actor* actor){
+    Diagnostics::Scope operation(actor?actor->GetFormID():0);
+    Diagnostics::Trace("Spell handling effect={:08X}",effect);
     for(unsigned i=0;i<effects.size();++i)if(effects[i]&&effects[i]->GetFormID()==effect){
-        if(i==0)Bind(actor,false);else if(i==1)Bind(actor,true);else ToggleTether(actor,i==3);
+        if(i==0)Bind(actor,false);else if(i==1){
+            if(actor&&actor->IsPlayerRef()){auto* pick=RE::CrosshairPickData::GetSingleton();auto ref=pick?pick->GetActiveTarget().get():RE::NiPointer<RE::TESObjectREFR>{};actor=ref?ref->As<RE::Actor>():nullptr;}
+            Bind(actor,true);
+        }else ToggleTether(actor,i==3);
         return true;
     }return false;
 }
@@ -359,8 +421,8 @@ void Loaded(RE::Actor* actor){
     if(!hooksReady||actor->IsDead()||b.releaseRequested){Release(actor);return;}
     if(b.post&&Displaced(actor,b))return; // Tick releases after the destination is attached.
     actor->EnableAI(true);actor->SetLifeState(RE::ACTOR_LIFE_STATE::kRestrained);actor->GetActorRuntimeData().boolFlags.set(flagsMask);Freeze(actor,b);
-    if(b.post){HoldAnchor(actor);if(!Busy(actor))StartTether(actor,true);}
-    if(b.pacified&&!Mounts::Converted(actor)&&actor->Get3D())actor->NotifyAnimationGraph("IdleBoundStandingStart");
+    if(b.post){HoldAnchor(actor);if(!b.pacified&&leashAvailable&&!Busy(actor))StartTether(actor,true);}
+    if(b.pacified&&!Mounts::Converted(actor)&&actor->Get3D())if(!Crawl::BindBound(actor))actor->NotifyAnimationGraph("IdleBoundStandingStart");
 }
 void PostLoad(){
     if(!leashAvailable)tethers.clear();

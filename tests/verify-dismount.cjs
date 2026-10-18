@@ -35,9 +35,10 @@ struct PlayerCamera {static PlayerCamera* GetSingleton(){static PlayerCamera c;r
 struct Handle {std::shared_ptr<RE::Actor> value;bool stale=false;auto get(){return value;}void reset(){value.reset();stale=false;}explicit operator bool()const{return value||stale;}}ridden;
 struct State{int animation=3;};std::unordered_map<int,State> targets;
 void *riderFaction{},*mountFaction{};int ridePhysics=1,proxyPhysics=2;unsigned playerControllerFlags{},mountControllerFlags{};
-bool firstPersonBefore=false,wasAir=false;float jumpTimer{},landTimer{};int rideGait{};
+bool firstPersonBefore=false,wasAir=false;float jumpTimer{},landTimer{},transitionTime{};int rideGait{};
 float playerSpeedDelta=0;bool downActive=false,upActive=false;unsigned downFlags=0,downOriginalFlags=0;RE::NiPoint3 downOffset;HoldGate dismountHold;
-namespace Seat{void Clear(){}}namespace MovementCompat{void End(){}}void ApplySpeed(RE::Actor*,float,float& delta){delta=0;}
+namespace Seat{void Clear(){}}namespace MovementCompat{void End(){}}
+namespace RideDrive{void End(){}}void ApplySpeed(RE::Actor*,float,float& delta){delta=0;}
 int restores=0;void RestoreController(RE::Actor*,int,unsigned){++restores;}void StopMotion(RE::Actor*){}
 bool floorFound=false,wallBlocked=false;int rays=0;
 bool Ray(RE::bhkWorld*,RE::NiPoint3 from,RE::NiPoint3 to,RE::bhkPickData&){++rays;return from.z!=to.z?floorFound:wallBlocked;}

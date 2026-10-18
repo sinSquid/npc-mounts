@@ -21,7 +21,7 @@ inline Actor actor;struct TESForm{template<class T>static T* LookupByID(unsigned
 namespace Extras{unsigned epoch=1,loads=0;unsigned Session(){return epoch;}void Loaded(RE::Actor*){++loads;}}
 namespace Crawl{void Bind(RE::Actor*){}}
 namespace SKSE {struct Tasks{std::vector<std::function<void()>>queue;void AddTask(std::function<void()> fn){queue.push_back(fn);}void Run(){auto pending=std::move(queue);queue.clear();for(auto& fn:pending)fn();}};Tasks tasks;Tasks* GetTaskInterface(){return &tasks;}}
-struct State{bool restoreRequested=false;int animation=3;};std::unordered_map<unsigned,State>targets{{1,{}}};int mountFaction=0,restores=0;
+struct State{bool restoreRequested=false;int animation=3;bool posePending=false;};std::unordered_map<unsigned,State>targets{{1,{}}};int mountFaction=0,restores=0;
 void Restore(RE::Actor*){++restores;targets.erase(1);}void HoldPose(RE::Actor* a){++a->mutations;}void StopMotion(RE::Actor* a){++a->mutations;}
 ${source.slice(resetStart,resetEnd)}
 void RetryPose(){auto* actor=&RE::actor;const auto& state=targets.at(1);const unsigned id=1;
@@ -35,6 +35,7 @@ int main(){Handler h;RE::TESObjectLoadedEvent event{1,true};
  RE::actor.cell.attached=false;h.ProcessEvent(&event,nullptr);SKSE::tasks.Run();assert(RE::actor.mutations==before&&Extras::loads==1);RE::actor.cell.attached=true;
  RE::actor.loaded=false;h.ProcessEvent(&event,nullptr);SKSE::tasks.Run();assert(RE::actor.mutations==before);RE::actor.loaded=true;
  targets.at(1).animation=-1;RetryPose();assert(targets.at(1).animation==0&&RE::actor.mutations>before);before=RE::actor.mutations;RetryPose();assert(RE::actor.mutations==before);
+ targets.at(1).posePending=true;h.ProcessEvent(&event,nullptr);SKSE::tasks.Run();assert(RE::actor.mutations==before);targets.at(1).posePending=false;
  targets.at(1).restoreRequested=true;h.ProcessEvent(&event,nullptr);SKSE::tasks.Run();assert(restores==1&&RE::actor.mutations==before);
  event.formID=99;h.ProcessEvent(&event,nullptr);assert(SKSE::tasks.queue.empty());event.formID=1;event.loaded=false;h.ProcessEvent(&event,nullptr);assert(SKSE::tasks.queue.empty());
  std::puts("PASS: loaded event defers mutations; detached/missing 3D and stale-session tasks skipped; pending B restored; non-actors/unload events enqueue nothing.");

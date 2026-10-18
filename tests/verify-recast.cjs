@@ -7,7 +7,7 @@ fs.writeFileSync(path.join(__dirname,'../build/recast-regression.cpp'),`
 #include <cstdio>
 #include <unordered_map>
 namespace RE{struct Actor{unsigned id=1;bool ready=true,dead=false,riding=false,bound=false,busy=false;int resets=0,holds=0,stats=0;unsigned GetFormID(){return id;}bool IsDead(){return dead;}};}
-struct State{bool restoreRequested=false;float requestedScale=1,originalScale=.8f,speedDelta=60;unsigned originalFlags=123;};
+struct State{bool restoreRequested=false;float requestedScale=1,originalScale=.8f,speedDelta=60;unsigned originalFlags=123;bool posePending=false;};
 std::unordered_map<unsigned,State>targets{{1,{}}};
 bool Converted(RE::Actor* a){return a&&targets.contains(a->id);}bool Restoring(RE::Actor* a){return targets.at(a->id).restoreRequested;}bool ActorReady(RE::Actor* a){return a->ready;}bool Riding(RE::Actor* a){return a->riding;}
 namespace Extras{bool Bound(RE::Actor* a){return a->bound;}bool Busy(RE::Actor* a){return a->busy;}}

@@ -1,0 +1,30 @@
+NPCMounts R — 2026-10-17
+范围：敌对目标资格、固定后释放、移动座位错位。复用P会话及Q备份，不要求新游戏复现，不恢复DoM兼容。
+
+1、敌对目标资格
+CommonLib Actor.cpp中IsOnMount仅判断非mount且有ExtraInteraction；GetOccupiedFurniture返回AIProcess.middleHigh保存的句柄，而不是当前坐卧状态。
+Extras::Eligible改查ActorState的GetSitSleepState()==kNormal和引擎GetMount；Convert也改用GetMount。保留非玩家/活体/非还原中/已加载/人形背骨/非击杀、敌对条件以及Crawl完整骨骼映射校验。
+测试实际Eligible和Bind：历史家具句柄、通用交互存在但实际未骑乘可以进入；真正骑乘、坐卧、死亡、缺骨骼、未加载仍拒绝。此前capture测试将Eligible直接替身为非空，无法覆盖这些判定，本轮已替换为生产函数。
+边界：P日志没有坐卧/家具/原生mount子项，无法反推那两次强盗拒绝究竟命中了哪项。不能声称已定位该具体NPC全部失败原因。诊断现在同时记录旧指标和真实状态。僵尸的骨架不兼容继续拒绝，不放宽。
+
+2、固定位置
+原Freeze仅在Tick/AfterActorUpdate清速度，缺少对当次原生移动提交的限制。新增BlockMovement在NPCUpdate进入原更新前检查有效固定，清剩余速度，并复用已经安装/验证的RideHooks::placedActor作用域抑制当次MovementDelta。
+不安装新钩子、不改ABI、不禁用AI/动画、不修改SetPosition/MoveTo，不在更新后拉回。正常NPC和玩家不在该作用域。释放请求、死亡、未加载或外部位移超过32时不拦截，保持安全解除规则。
+Displaced原来把任意ParentCell变化当传送。P日志Serana格子变化、相邻观测距离1.07；现在同一非空worldspace允许格子归属变化，但位置仍须距固定点32以内。不同室内格/世界/远距离变化仍释放。
+接桩绳也用相同坐标空间判断；桩放在侧面80单位可能位于相邻室外格，原来要求桩和NPC同格会错误失败。
+新增实际NPCUpdate+BlockMovement+MovementDelta集成替身测试：1000次更新正常执行但无自主位移；释放、无关NPC、外部位移和嵌套作用域恢复通过。原BIND v1/v2存取、牵引异步清理测试继续通过。
+核对LeashFramework 1.1.7源码：PullController::CanPull对restrained/MovementBlocked拒绝主动拉动，固定目标不应改为开放牵引行走。API签名与目前参数一致。只读检查现有桩NIF包含碰撞，未擅自修改资源。
+边界：婉儿0.17秒后同格超过32位移的原始调用者没有记录；本轮修复明确存在的自主位移通道，但无法证明外部物理/脚本位移全部消失。
+
+3、座位移动错位
+P会话143组Ride sample，120组玩家/NPC原点差>1；中位差4.3587，最大27.5901单位。旧Seat::Update只计算local*scaleRatio，默认两者原点/旋转一致，忽略实际发布的模型变换。
+改为playerLocal = inverse(playerRotation)*(mountOrigin-playerOrigin)/playerScale + inverse(playerRotation)*mountRotation*filteredLocalScaleRatio。
+仍只在生成器中写玩家姿态，不新增场景节点修改/第二次下行更新/位置回拉。只滤局部座位高度，世界位置、地形及跳跃偏移不进入滤波；上下骑末端仍落到既有退出位置。
+旧seat回归明确断言“模型原点变化不影响local target”，这会把上述错误当正确。本轮改为独立世界空间不变量：playerOrigin+playerRotation*target*playerScale等于目标背部世界坐标；覆盖多scale、不同yaw、不同原点、SaddleBone和上下骑过渡。不能把这个数学测试当游戏渲染验证。
+
+保持：Motion.h、Crawl.cpp、RideHooks.h/ABI、碰撞过滤、玩家输入、B还原、Travel、INI、ESP、动作与网格资源、目录/profile不改。
+验证：第一轮27组完整回归；最终第二轮28组（增加anchor-update）和真实CommonLib安装链、原EXE入口、MASM ABI、日志测试通过；Release构建通过。故意无效指令测试中的error是预期拒绝，不是安装失败。
+部署：仅NPCMounts.dll。SHA256=00FE71CA8A68DF7FDA32C63A3CFF917122FC1A3BF08D3A23248FD82FB57B0445。
+备份：E:\iniRePather-Skyrim\Mod Organizer 2\backups\NPCMounts-runtime-20261017-r（完整Q版7024文件并核验）。
+证据：build/ride-r；原游戏日志build/ride-q/evidence/NPCMounts.log、LeashFramework.log。
+未游戏验收，未提交推送。三个路径均有代码修正，但不声明所有拒绝、释放及视觉抖动已经游戏验证消失。

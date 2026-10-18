@@ -12,9 +12,11 @@ const code=`
 #include <string>
 #include <vector>
 struct State {int animation=0;};
+struct {int logLevel=4;}config;
 void* mountFaction{};
 namespace RE {
 struct Actor {
+ unsigned GetFormID(){return 1;}
  int rank=0,expected=0,writes=0;std::vector<std::string> events;
  void AddToFaction(void*,std::int8_t value){rank=value;++writes;}
  void NotifyAnimationGraph(const char* event){assert(rank==expected);events.emplace_back(event);}

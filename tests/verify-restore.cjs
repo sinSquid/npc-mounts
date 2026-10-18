@@ -32,7 +32,9 @@ struct Actor {
  enum class BOOL_FLAGS : unsigned {};
  FormID id; bool enabled=true,dead=false,marker=true,inScene=false,ready=true; unsigned evaluations{};
  float scale=1.24f,speed=100;unsigned scaleWrites=0;bool quantizeScale=false;
- float GetScale(){return scale;}void SetScale(float value){++scaleWrites;scale=quantizeScale?std::round(value*100)/100:value;}
+ float raceHeight=1;struct Reference{float refScale;} reference;
+ auto& GetReferenceRuntimeData(){reference.refScale=scale/raceHeight*100;return reference;}
+ float GetScale(){return scale;}void SetScale(float value){++scaleWrites;scale=(quantizeScale?std::round(value*100)/100:value)*raceHeight;}
  Actor* AsActorValueOwner(){return this;}float GetActorValue(ActorValue){return speed;}
  void ModActorValue(ACTOR_VALUE_MODIFIER,ActorValue,float delta){speed+=delta;}
  ACTOR_LIFE_STATE life=ACTOR_LIFE_STATE::kRestrained;
@@ -75,6 +77,7 @@ namespace Extras {
 bool ready=true;bool Release(RE::Actor*){return ready;}void ReleaseAll(){}
 void Save(SKSE::SerializationInterface*){}bool Load(SKSE::SerializationInterface*,std::uint32_t,std::uint32_t,std::uint32_t){return false;}
 }
+namespace Wardrobe {void Restore(RE::Actor*){}void Save(SKSE::SerializationInterface*){}bool Load(SKSE::SerializationInterface*,std::uint32_t,std::uint32_t,std::uint32_t){return false;}}
 constexpr auto ownedFlags=static_cast<RE::Actor::BOOL_FLAGS>((1u<<27)|(1u<<20)|(1u<<21)|(1u<<29));
 ${extract('struct State {')};
 std::unordered_map<RE::FormID,State> targets;
@@ -89,6 +92,7 @@ bool Dismount(bool emergency=false,bool notify=true){++dismountCalls;if(allowDis
 bool Converted(RE::Actor* actor){return actor&&targets.contains(actor->id);}
 bool ActorReady(RE::Actor* actor){return actor->ready;}
 ${extract('void ApplySpeed(')}
+${extract('void RestoreScale(')}
 ${extract('void ApplyStats(')}
 ${extract('void StopMotion(')}
 ${extract('void Restore(')}
@@ -155,6 +159,12 @@ int main(){
  config.npcScale=.5f;ApplyStats(&quantized,targets.at(13));assert(quantized.scaleWrites==2&&quantized.scale==.5f);
  config.overrideScale=false;ApplyStats(&quantized,targets.at(13));assert(quantized.scaleWrites==3&&quantized.scale==1.24f);
  Restore(&quantized);assert(quantized.scaleWrites==3&&quantized.speed==100);config.overrideScale=true;config.npcScale=3;
+ // Recorded game case: GetScale=1.03, SetScale(1.03) produced 1.0609.
+ for(float height:{.95f,1.03f,1.08f}){
+  RE::Actor racial{99};racial.raceHeight=height;racial.scale=height;racial.quantizeScale=true;
+  for(int i=0;i<10;++i){prepare(racial);config.npcScale=1.9f;ApplyStats(&racial,targets.at(99));Restore(&racial);assert(std::abs(racial.scale-height)<.00001f);}
+  prepare(racial);ApplyStats(&racial,targets.at(99));config.overrideScale=false;ApplyStats(&racial,targets.at(99));assert(std::abs(racial.scale-height)<.00001f);Restore(&racial);config.overrideScale=true;
+ }
  // Below-threshold adjustments must not change bookkeeping without an AV write.
  RE::Actor micro{11};float ledger=0;
  for(int i=0;i<1000;++i){ApplySpeed(&micro,1.000005f,ledger);assert(std::abs((micro.speed-ledger)-100.f)<.00002f);}

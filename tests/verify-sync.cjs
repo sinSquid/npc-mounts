@@ -18,7 +18,7 @@ const code=`
 #include "../src/Config.h"
 Settings::Data config;
 namespace RE {
-struct NiPoint3 {float x{},y{},z{};bool operator==(const NiPoint3&)const=default;};
+struct NiPoint3 {float x{},y{},z{};bool operator==(const NiPoint3&)const=default;NiPoint3 operator-(NiPoint3 b)const{return {x-b.x,y-b.y,z-b.z};}float Length()const{return std::sqrt(x*x+y*y+z*z);}};
 struct hkVector4 {};
 enum class CHARACTER_FLAGS : unsigned {kNoSim=1u<<17,kNoCharacterCollisions=1u<<27};
 struct Flags {
@@ -30,7 +30,7 @@ struct Controller {Flags flags;NiPoint3 position;float fallTime{};void SetLinear
 struct Cell{bool attached=true;bool IsAttached(){return attached;}};inline Cell cell;
 struct Actor {
  NiPoint3 position;Controller controller;float angle{};unsigned writes{};
- Cell* parent=&cell;bool loaded=true;auto* GetParentCell(){return parent;}void* Get3D(){return loaded?this:nullptr;}
+ Cell* parent=&cell;bool loaded=true;void* world=nullptr;void* GetWorldspace(){return world;}auto* GetParentCell(){return parent;}void* Get3D(){return loaded?this:nullptr;}
  auto* GetCharController(){return &controller;}
  auto GetPosition(){return position;}auto GetAngleZ(){return angle;}
  void SetAngle(NiPoint3 value){angle=value.z;}
@@ -43,7 +43,10 @@ ${extract('SyncMount')}
 ${extract('RestoreController')}
 int main(){
  RE::Actor player,mount;mount.controller.flags.value=(1u<<17)|(1u<<21);
- RE::Cell elsewhere;mount.parent=&elsewhere;SyncMount(&mount,&player,true);assert(mount.writes==0);mount.parent=&RE::cell;
+ RE::Cell elsewhere;mount.parent=&elsewhere;SyncMount(&mount,&player,true);assert(mount.writes==0);
+ player.world=mount.world=&elsewhere;assert(RideReady(&mount,&player));
+ mount.position.x=513;assert(!RideReady(&mount,&player));mount.position.x=0;
+ mount.world=&RE::cell;assert(!RideReady(&mount,&player));player.world=mount.world=nullptr;mount.parent=&RE::cell;
  RE::cell.attached=false;SyncMount(&mount,&player,true);assert(mount.writes==0);RE::cell.attached=true;
  mount.loaded=false;SyncMount(&mount,&player,true);assert(mount.writes==0);mount.loaded=true;
  const auto owned=static_cast<RE::CHARACTER_FLAGS>((1u<<17)|(1u<<27));

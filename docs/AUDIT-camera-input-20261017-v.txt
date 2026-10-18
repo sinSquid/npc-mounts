@@ -1,0 +1,31 @@
+NPCMounts V — 2026-10-17
+用户反馈：U版测试仍异常；提示已提交版本可对照。当前不能宣称所有问题解决。
+
+完整日志复核
+本轮归档20261017-183546-869-22016-27341609.log，读取3864行，确认Runtime U及18:29:22构建。
+记录7次Mounted与7次Dismounted，无旧下骑过渡启动日志；这只能证明本插件上下骑入口执行，不能证明其他动作来源或画面完全正常。
+3次菜单保存都有begin/closed success=true/render completed。无该操作崩溃证据。
+23次Jump键诊断、21次控制器请求、8次起跳检测；检测速度Z为2.518258、0.0029157843、0.62770796、0.0011291953、0.033178493、0.14489993、0.107628234、0.10304949。多次请求未记录起跳，微小正速度也会满足旧检测，不能认定8次都是有效跳跃。未定位全部物理起跳异常，不改变物理算法作无据尝试。
+存在Serana 02002B74的完整Restored记录；仅证明该次还原入口成功。
+每次一个Seat图接受、一个在Translate辅助节点父链被拒。对照HEAD 03ea4a7/49fe71a，其严格父链检查原已存在，旧版在LookNode别名处更早拒绝；不是新引入的双图不兼容，不能拿它单独解释本次回归。不放宽校验，不盲目写不匹配骨架。
+U日志seat=true只代表曾经写过，没有当前输出频率或相机状态记录。日志无法证明当前每帧姿态覆盖以及具体视觉动作来源。
+
+有依据的修复
+1. git diff确认：已提交Seat::GeneratePose保留Camera*原生轨道，后续S改成静态覆盖相机。本轮恢复Camera3rd/Camera Control原生输出，不用静态骑姿控制鼠标相机；保留人体根和身体骑姿覆盖、现有座位贴合计算。未整包回退，不恢复旧上下骑动画/DoM兼容。
+2. U只在JumpHandler::CanProcess里返回false，却仍把Jump事件留在BSInputDeviceManager链中。本轮RideInput在骑乘、未暂停、游戏输入上下文中调用现有控制器请求并移除Jump按下/保持/松开，避免原生处理器及后续输入接收者再处理同一事件。此项不承诺阻止更早的接收者、轮询按键或绕过队列的第三方操作；不指认具体插件为根因。下骑键设置为Space时仍先处理下骑，不起跳。非骑乘/菜单照旧透传。
+
+诊断补齐（不改变步态/物理算法）
+Seat输出计数每0.5秒日志窗口读取清零，替代只看历史成功标志；同窗口记录相机类型、MouseSteering、freeYaw、freeEnabled、实际渲染骨盆相对背部距离和wantState。
+每次控制器起跳请求后最多8帧记录wantState/currentState/jumpHeight/垂直速度/outVelocity/flags，每次上骑最多32个请求采样；仅DebugLog开启执行，原自动归档和既有限频采样继续保留。不会每帧无界写日志。
+
+验证
+两轮各30组离线生产函数回归及安装链/EXE/MASM接口检查完成；最后另测Space作为下骑键优先、暂停与未骑乘Jump透传。
+反向验证：用实际U版备份中的Seat.cpp与plugin.cpp运行新增检查，分别因Camera轨道被覆盖和Jump链未消耗断言失败；V对应检查通过。相机用不同于骑姿数据的动态平移，避免相同样本导致假通过。
+以上不是游戏验证。V未游戏验收，21次请求仅8次起跳检测的全部原因、用户描述的残余动作表现尚未证实解决。
+
+部署
+已Release构建部署E:\iniRePather-Skyrim\Mod Organizer 2\mods\【实验室】NPC坐骑-ai编码，仅NPCMounts.dll变化。
+DLL SHA256=2831F2CD5F4B181EDA9897A73EA279ECA168A1B19E0C3217F277B329A58B8834
+7024文件完整核验；INI/ESP/动画资源/已修好的Motion步态/RideHooks/目录/profile不改。
+完整U版备份：E:\iniRePather-Skyrim\Mod Organizer 2\backups\NPCMounts-camera-input-20261017-v
+_evidence保存原记录、profile、整轮原始日志、解析统计、源码V和测试。未提交推送。

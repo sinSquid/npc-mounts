@@ -1,12 +1,13 @@
 #include "pch.h"
 #include "Crawl.h"
+#include "PosePoint.h"
 #include <array>
 #include <fstream>
 #include <mutex>
 #include <unordered_map>
 
 namespace Crawl {
-constexpr unsigned bones=99,clipCount=7;
+constexpr unsigned bones=99,clipCount=8,boundClip=7;
 struct Pose{float t[4],q[4],s[4];};
 using Frame=std::array<Pose,bones>;
 struct Clip{float duration{};std::vector<Frame> frames;};
@@ -14,7 +15,8 @@ std::array<Clip,clipCount> clips;
 std::array<std::array<char,64>,bones> names;
 std::array<std::int16_t,bones> parents;
 struct Graph{RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count{};std::array<unsigned,bones> map;};
-struct ActorPose{const RE::NiAVObject* root{};std::vector<Graph> graphs;Frame pose;int gait=0;float time=0;bool wrote=false;};
+struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
+struct ActorPose{const RE::NiAVObject* root{};std::vector<Graph> graphs;std::vector<GraphStamp> graphStamp;Frame pose;int gait=0;float time=0;bool wrote=false;bool publish=true;bool swimming=false;bool bound=false;};
 std::unordered_map<RE::FormID,ActorPose> actors;
 struct Retry{const RE::NiAVObject* root{};float remaining=0;};
 std::unordered_map<RE::FormID,Retry> retries;
@@ -43,30 +45,51 @@ std::string_view Canonical(std::string_view name){
     // Vanilla and XPMSSE differ on this helper, not on deforming bones.
     return name=="x_NPC LookNode [Look]"?"NPC LookNode [Look]":name;
 }
+std::string OverlayName(std::string_view name){
+    if(name.starts_with("x_"))name.remove_prefix(2);
+    if(const auto bracket=name.find(" [");bracket!=std::string_view::npos)name=name.substr(0,bracket);
+    std::string result;result.reserve(name.size());
+    for(const unsigned char c:name)if(std::isalnum(c))result.push_back(static_cast<char>(std::tolower(c)));
+    return result;
+}
+bool OverlayBone(std::string_view name){
+    const auto n=OverlayName(name);
+    if(n=="npcspine"||n=="npcspine1"||n=="npcspine2"||n=="npcneck"||n=="npchead")return true;
+    const bool side=n.starts_with("npcl")||n.starts_with("npcr");
+    return side&&(n.find("clavicle")!=std::string::npos||n.find("upperarm")!=std::string::npos||n.find("forearm")!=std::string::npos||
+        n.find("hand")!=std::string::npos||n.find("thumb")!=std::string::npos||n.find("index")!=std::string::npos||
+        n.find("middle")!=std::string::npos||n.find("ring")!=std::string::npos||n.find("pinkie")!=std::string::npos);
+}
 void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE::hkbGeneratorOutput** children,RE::hkbGeneratorOutput& output,float offset){
     original(self,context,children,output,offset);
     std::scoped_lock lock(mutex);
     for(auto& [id,actor]:actors)for(const auto& binding:actor.graphs){
         if(&binding.graph->characterInstance!=context.character)continue;
+        if(!actor.publish)return;
         if(!output.tracks)return;
         const auto& header=output.tracks->masterHeader;
         if(header.numTracks<3||header.numTracks>128||header.numBytes<16+header.numTracks*16)return;
         const auto& track=output.tracks->trackHeaders[2];
-        if(track.numData<bones||track.numData>binding.count||track.capacity<track.numData||track.elementSizeBytes!=sizeof(Pose)||
+        if((actor.bound?track.numData<15:track.numData<bones)||track.numData>binding.count||track.capacity<track.numData||track.elementSizeBytes!=sizeof(Pose)||
             static_cast<int>(track.flags)!=0||static_cast<int>(track.type)!=1||track.onFraction<=0||
             track.dataOffset<16+header.numTracks*16||track.dataOffset>header.numBytes||
             track.numData*sizeof(Pose)>header.numBytes-track.dataOffset)return;
         auto* data=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
-        if(std::any_of(binding.map.begin(),binding.map.end(),[&](unsigned index){return index>=static_cast<unsigned>(track.numData);}))return;
-        for(unsigned i=0;i<bones;++i)std::memcpy(data+binding.map[i]*sizeof(Pose),&actor.pose[i],sizeof(Pose));
+        if(std::any_of(binding.map.begin(),binding.map.end(),[&](unsigned index){return index!=std::numeric_limits<unsigned>::max()&&index>=static_cast<unsigned>(track.numData);}))return;
+        for(unsigned i=0;i<bones;++i)if(binding.map[i]!=std::numeric_limits<unsigned>::max()){
+            auto* destination=reinterpret_cast<Pose*>(data+binding.map[i]*sizeof(Pose));
+            if(actor.bound)std::memcpy(destination->q,actor.pose[i].q,sizeof(destination->q));
+            else std::memcpy(destination,&actor.pose[i],sizeof(Pose));
+        }
         if(!actor.wrote){actor.wrote=true;spdlog::info("Native crawl output active ref={:08X} tracks={}",id,track.numData);}
         // Only animation output is touched, before skin/SMP publication.
         // Unmapped custom bones and the character controller remain untouched.
         return;
     }
 }
-bool Install(){
-    std::ifstream file("Data/SKSE/Plugins/NPCMounts/Crawl.nmc",std::ios::binary);
+bool Available(){return loaded;}
+bool Install(const char* path){
+    std::ifstream file(path,std::ios::binary);
     std::array<std::uint32_t,4> header{};file.read(reinterpret_cast<char*>(header.data()),sizeof(header));
     if(header!=std::array<std::uint32_t,4>{0x434d504e,1,bones,clipCount})return false;
     file.read(reinterpret_cast<char*>(names.data()),sizeof(names));file.read(reinterpret_cast<char*>(parents.data()),sizeof(parents));
@@ -86,23 +109,50 @@ bool Install(){
     original=reinterpret_cast<Generate>(graph.write_vfunc(0x17,GeneratePose));loaded=true;
     return true;
 }
-bool Bind(RE::Actor* actor){
+std::vector<GraphStamp> Snapshot(const RE::BSAnimationGraphManager& manager){
+    std::vector<GraphStamp> result;result.reserve(manager.graphs.size());
+    for(const auto& graph:manager.graphs){
+        if(!graph||!graph->characterInstance.setup)continue;
+        const auto skeleton=graph->characterInstance.setup->animationSkeleton;
+        result.push_back({graph.get(),skeleton.get(),skeleton?static_cast<std::size_t>(skeleton->bones.size()):0u});
+    }
+    return result;
+}
+bool Matches(const RE::BSAnimationGraphManager& manager,const std::vector<GraphStamp>& stamp){
+    std::size_t index=0;
+    for(const auto& graph:manager.graphs){
+        if(!graph||!graph->characterInstance.setup)continue;
+        const auto skeleton=graph->characterInstance.setup->animationSkeleton;
+        if(index>=stamp.size()||stamp[index].graph!=graph.get()||stamp[index].skeleton!=skeleton.get()||
+            stamp[index].bones!=(skeleton?static_cast<std::size_t>(skeleton->bones.size()):0u))return false;
+        ++index;
+    }
+    return index==stamp.size();
+}
+bool BindMode(RE::Actor* actor,bool publish,bool bound){
     if(!actor||!loaded)return false;
-    ActorPose result;result.root=actor->Get3D();result.pose=clips[0].frames.front();
+    ActorPose result;result.root=actor->Get3D();result.pose=clips[bound?boundClip:0].frames.front();result.gait=bound?boundClip:0;
+    result.publish=publish;result.swimming=actor->AsActorState()->IsSwimming();result.bound=bound;
     RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;
     if(!result.root||!actor->GetAnimationGraphManager(manager)||!manager)return false;
+    result.graphStamp=Snapshot(*manager);
     for(auto& graph:manager->graphs){
         if(!graph||!graph->characterInstance.setup)continue;
         auto skeleton=graph->characterInstance.setup->animationSkeleton;
-        if(!skeleton||skeleton->bones.size()<bones||skeleton->parentIndices.size()!=skeleton->bones.size())continue;
-        Graph binding{graph,static_cast<unsigned>(skeleton->bones.size()),{}};bool valid=true;
+        if(!skeleton||(!bound&&skeleton->bones.size()<bones)||skeleton->parentIndices.size()!=skeleton->bones.size())continue;
+        Graph binding{graph,static_cast<unsigned>(skeleton->bones.size()),{}};binding.map.fill(std::numeric_limits<unsigned>::max());bool valid=true;
+        unsigned mapped=0;
         for(unsigned i=0;i<bones&&valid;++i){
-            bool found=false;
-            for(unsigned j=0;j<binding.count;++j)if(skeleton->bones[j].name.c_str()&&Canonical(skeleton->bones[j].name.c_str())==Canonical(names[i].data())){binding.map[i]=j;found=true;break;}
+            if(bound&&!OverlayBone(names[i].data()))continue;
+            const auto wanted=bound?OverlayName(names[i].data()):std::string(Canonical(names[i].data()));bool found=false;
+            for(unsigned j=0;j<binding.count;++j)if(skeleton->bones[j].name.c_str()){
+                const auto actual=bound?OverlayName(skeleton->bones[j].name.c_str()):std::string(Canonical(skeleton->bones[j].name.c_str()));
+                if(actual==wanted){binding.map[i]=j;found=true;++mapped;break;}
+            }
             if(!found){valid=false;break;}
-            const int expected=parents[i]<0?-1:static_cast<int>(binding.map[parents[i]]);
-            if(skeleton->parentIndices[binding.map[i]]!=expected)valid=false;
+            if(!bound){const int expected=parents[i]<0?-1:static_cast<int>(binding.map[parents[i]]);if(skeleton->parentIndices[binding.map[i]]!=expected)valid=false;}
         }
+        if(bound&&mapped<15)valid=false;
         if(valid)result.graphs.push_back(std::move(binding));
     }
     if(result.graphs.empty()){
@@ -112,14 +162,25 @@ bool Bind(RE::Actor* actor){
     }
     std::scoped_lock lock(mutex);retries.erase(actor->GetFormID());actors.insert_or_assign(actor->GetFormID(),std::move(result));return true;
 }
+bool Bind(RE::Actor* actor,bool publish){return BindMode(actor,publish,false);}
+bool BindBound(RE::Actor* actor){return BindMode(actor,true,true);}
+bool Resume(RE::Actor* actor){
+    std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());
+    if(it==actors.end()||it->second.publish)return false;
+    it->second.publish=true;return true;
+}
 void Update(RE::Actor* actor,int gait,float delta){
     if(!actor)return;
     {std::scoped_lock lock(mutex);auto it=retries.find(actor->GetFormID());if(it!=retries.end()&&it->second.root==actor->Get3D()){
         it->second.remaining-=std::clamp(delta,0.f,.1f);if(it->second.remaining>0)return;
     }}
-    bool bind=false;{std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());bind=it==actors.end()||it->second.root!=actor->Get3D();}
+    bool bind=false;{
+        RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;actor->GetAnimationGraphManager(manager);
+        std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());
+        bind=it==actors.end()||it->second.bound||it->second.root!=actor->Get3D()||!manager||!Matches(*manager,it->second.graphStamp);
+    }
     if(bind&&!Bind(actor))return;
-    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());
+    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.swimming=actor->AsActorState()->IsSwimming();
     gait=std::clamp(gait,0,6);if(state.gait!=gait){
         // Walk/run/sprint share a cycle. Carry phase instead of restarting frame zero.
         const bool forwardCycle=state.gait>=1&&state.gait<=3&&gait>=1&&gait<=3;
@@ -131,6 +192,44 @@ void Update(RE::Actor* actor,int gait,float delta){
     // Frame-rate independent short blend; no scene-node interpolation or teleport.
     Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
 }
+void UpdateBound(RE::Actor* actor,float delta){
+    if(!actor)return;
+    bool bind=false;{
+        RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;actor->GetAnimationGraphManager(manager);
+        std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());
+        bind=it==actors.end()||!it->second.bound||it->second.root!=actor->Get3D()||!manager||!Matches(*manager,it->second.graphStamp);
+    }
+    if(bind&&!BindBound(actor))return;
+    std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.swimming=actor->AsActorState()->IsSwimming();state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[boundClip].duration);
+    Frame next;Sample(clips[boundClip],state.time,next);Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
+}
+bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway){
+    if(!actor)return false;
+    std::scoped_lock lock(mutex);
+    const auto it=actors.find(actor->GetFormID());
+    if(it==actors.end()||it->second.root!=actor->Get3D())return false;
+    for(unsigned i=0;i<bones;++i)if(std::string_view(names[i].data())=="NPC Spine2 [Spn2]"){
+        const auto current=PosePoint(it->second.pose,parents,static_cast<int>(i));
+        const auto rest=PosePoint(clips[0].frames.front(),parents,static_cast<int>(i));
+        const auto relative=[](const Frame& frame,int bone){
+            std::array<float,3> p{};for(int n=bone;n>=5;n=parents[n]){
+                const auto& b=frame[n];const float x=b.q[0],y=b.q[1],z=b.q[2],w=b.q[3];const float px=p[0]*b.s[0],py=p[1]*b.s[1],pz=p[2]*b.s[2];
+                p={b.t[0]+(1-2*(y*y+z*z))*px+2*(x*y-z*w)*py+2*(x*z+y*w)*pz,
+                   b.t[1]+2*(x*y+z*w)*px+(1-2*(x*x+z*z))*py+2*(y*z-x*w)*pz,
+                   b.t[2]+2*(x*z-y*w)*px+2*(y*z+x*w)*py+(1-2*(x*x+y*y))*pz};
+            }return p;
+        };
+        const auto currentRelative=relative(it->second.pose,static_cast<int>(i)),restRelative=relative(clips[0].frames.front(),static_cast<int>(i));
+        const float amount=std::clamp(sway,0.f,1.f);
+        // Phantom Horse keeps rider COM X exactly on the mount centreline.
+        // Use the crawl cycle only as the bob phase; never turn it into lateral drift.
+        point={0.f,
+               rest[1]+std::clamp(currentRelative[1]-restRelative[1],-1.5f,1.5f)*amount,
+               rest[2]+std::clamp(currentRelative[2]-restRelative[2],-2.4f,3.3f)*amount};return true;
+    }
+    return false;
+}
+bool Working(RE::Actor* actor){std::scoped_lock lock(mutex);auto it=actor?actors.find(actor->GetFormID()):actors.end();return it!=actors.end()&&it->second.wrote;}
 void Remove(RE::FormID id){std::scoped_lock lock(mutex);actors.erase(id);retries.erase(id);}
 void Clear(){std::scoped_lock lock(mutex);actors.clear();retries.clear();}
 }

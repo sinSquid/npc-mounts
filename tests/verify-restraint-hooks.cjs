@@ -23,7 +23,7 @@ struct TESObjectCELL{unsigned id=2;bool attached=true;unsigned GetFormID(){retur
 inline TESObjectCELL cell;
 struct TESForm{template<class T>static T* LookupByID(FormID id){return id==2?reinterpret_cast<T*>(&cell):nullptr;}};
 struct TESObjectREFR{FormID id=1;FormID GetFormID(){return id;}};
-struct Actor:TESObjectREFR{enum class BOOL_FLAGS:unsigned{};NiPoint3 pos,angle;TESObjectCELL* parent=&cell;bool loaded=true;
+struct Actor:TESObjectREFR{enum class BOOL_FLAGS:unsigned{};NiPoint3 pos,angle;TESObjectCELL* parent=&cell;bool loaded=true;bool IsDead(){return false;}
  struct Controller{int zeroes=0;void SetLinearVelocityImpl(hkVector4){++zeroes;}}cc;
  TESObjectCELL* GetParentCell(){return parent;}void* Get3D(){return loaded?this:nullptr;}auto GetPosition(){return pos;}auto GetAngle(){return angle;}void SetAngle(NiPoint3 a){angle=a;}auto* GetCharController(){return &cc;}
 };
@@ -46,16 +46,25 @@ void originalPosition(RE::Actor* actor,const RE::NiPoint3& pos,bool){++positions
 bool originalHostile(RE::Actor*,RE::Actor*){return true;}bool originalCombat(RE::Actor*,RE::Actor*,RE::CombatGroup*){++combats;return true;}
 ${take('bool Find(')}
 ${take('bool Pacified(')}
+${take('bool Ready(')}
+${take('bool SameSpace(')}
 ${take('bool Displaced(')}
 ${take('bool HostileHook(')}
 ${take('bool CombatHook(')}
 ${take('void Freeze(')}
+${take('bool BlockMovement(')}
 ${take('void Save(')}
 ${take('bool Load(')}
 int main(){
  RE::Actor actor,other;other.id=99;RE::TESObjectCELL elsewhere;RE::NiPoint3 destination{100,200,300};RE::ObjectRefHandle handle;
  Binding pin;pin.position={1,2,3};pin.angle={0,0,.5f};pin.cell=2;pin.post=3;pin.oldHands=4;pin.flags=static_cast<unsigned>(flagsMask);pin.life=6;pin.teammate=true;pin.teammateSaved=true;bindings[1]=pin;
- actor.pos=pin.position;Freeze(&actor,pin);assert(actor.cc.zeroes==1);
+ actor.pos=pin.position;assert(BlockMovement(&actor));assert(actor.cc.zeroes==1);
+ bindings[1].releaseRequested=true;assert(!BlockMovement(&actor));bindings[1].releaseRequested=false;
+ RE::TESWorldSpace world;RE::cell.data.worldSpace=elsewhere.data.worldSpace=&world;elsewhere.id=8;
+ actor.parent=&elsewhere;assert(!Displaced(&actor,pin));Freeze(&actor,pin);assert(actor.cc.zeroes==2);
+ actor.pos.x+=33;assert(Displaced(&actor,pin)&&!BlockMovement(&actor));actor.pos=pin.position;
+ RE::cell.data.worldSpace=elsewhere.data.worldSpace=nullptr;assert(Displaced(&actor,pin));
+ actor.parent=&RE::cell;actor.cc.zeroes=1;
  elsewhere.id=8;
  for(bool loaded:{true,false}){actor.loaded=loaded;originalMove(&actor,handle,&elsewhere,nullptr,destination,{});Freeze(&actor,pin);assert(actor.parent==&elsewhere&&actor.pos==destination&&actor.cc.zeroes==1);}
  actor.parent=&RE::cell;actor.loaded=true;Freeze(&actor,pin);assert(Displaced(&actor,pin)&&actor.pos==destination&&actor.cc.zeroes==1); // same-cell forced teleport also yields
@@ -80,6 +89,6 @@ int main(){
  assert(Load(&legacy,'BIND',1,68)&&!bindings.at(1).teammateSaved&&bindings.at(1).position==pin.position);bindings.clear();
  bindings.clear();pin.releaseRequested=false;bindings[1]=pin;SKSE::SerializationInterface missingCell;Save(&missingCell);bindings.clear();missingCell.resolveCells=false;
  assert(Load(&missingCell,'BIND',2,76)&&bindings.at(1).releaseRequested&&bindings.at(1).cell==0);
- std::puts("PASS: no movement detours or coordinate rewrites; loaded/unloaded and same-cell external teleport yields; 10000 updates never pull back; D hostility unchanged; BIND v2 roundtrip and legacy v1 migration. Not engine QA.");
+ std::puts("PASS: anchor pre-movement gate and velocity clear; exterior border retained; no position rewrite; external teleport yields; D hostility unchanged; BIND v2/legacy restore. Not engine QA.");
 }
 `);

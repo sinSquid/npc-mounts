@@ -25,11 +25,13 @@ namespace SKSE{struct SerializationInterface{};struct Tasks{std::vector<std::fun
 namespace Extras{unsigned epoch=1;unsigned Session(){return epoch;}void Revert(){++epoch;}}
 namespace Seat{void Clear(){}}
 namespace MovementCompat{void End(){}}
+namespace RideDrive{void End(){}}
 namespace Crawl{void Clear(){}}
+namespace Wardrobe{void Clear(){}}
 namespace Travel{void Revert(){}}
 RE::Actor actor;RE::ActorHandle ridden;int mounts=0;bool converted=true;
 std::unordered_map<unsigned,int>targets;std::unordered_set<std::uint64_t>suppressedButtons;
-HoldGate dismountHold;bool downActive=false,loadedRideState=false,wasAir=false,upActive=false;float playerSpeedDelta=0,jumpTimer=0,landTimer=0,restoreRetry=0;int rideGait=0;
+HoldGate dismountHold;bool downActive=false,loadedRideState=false,wasAir=false,upActive=false;float playerSpeedDelta=0,jumpTimer=0,landTimer=0,restoreRetry=0,transitionTime=0;int rideGait=0;
 RE::Actor* Crosshair(){return &actor;}bool Converted(RE::Actor*){return converted;}
 bool nativeAccepted=true;bool originalActivate(RE::ActivateHandler*,RE::InputEvent*){return nativeAccepted;}void Mount(RE::Actor* a){++mounts;ridden=a->GetHandle();}
 ${take('bool ActivateInput(')}

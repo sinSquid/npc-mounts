@@ -1,0 +1,24 @@
+NPCMounts W — 2026-10-18
+用户明确症状：W前行时玩家左右晃动，疑似上下马动作；骑乘时仍看到人类跳跃。不是鼠标转向反馈。
+
+本轮事实
+最新归档20261018-015924-481-22176-53959234.log，共2422行；Runtime V，部署DLL SHA256与V一致，不是未加载新版。
+Serana一次上骑、一次下骑，无本插件上下马过渡启动。无法据此确定用户看到的动作是哪一片段，不能写成“确认又播放上下马动画”。
+222个视觉采样窗口，只有初始窗口seatWrites=0；排除初始后47个窗口骨盆相对背部水平偏移超过20单位，最大约50。持续输出不等于贴合正确。
+8次跳跃请求均有8帧后续记录：每次先state=0，再state=1(Jumping)且速度为0/负值，之后state=2(InAir)才出现约4.3的向上速度。8次都发生了物理腾空。先前“请求未起跳”的推断不适用于本轮。
+旧takeoff条件同时要求air、!wasAir、jumpTimer>0、vz>0，在第一帧Jumping无向上速度时错过，下一帧wasAir已为true而继续漏判；本轮3条旧takeoff日志的速度仅约1e-7，是接触抖动触发的微小正值，并非真正起跳确认。
+
+最小修改
+1. Seat::GeneratePose将前4个根/辅助轨道与Camera轨道保留规则恢复到已提交03ea4a7/49fe71a的写法：i<4或Camera*保留nativePose。V只恢复Camera，仍把原生Root/Look/Translate/Rotate替换为静态坐姿，尚未恢复提交版这部分行为。本轮不改骨架校验，不改原生控制器接口，不恢复上下马过渡。
+2. 身体姿态仍从COM以下采用骑姿并做骨盆贴背修正，不把人类跳跃腿部姿态重新放行；提取运动、额外骨骼与原生根/辅助轨道交还引擎。恢复此规则是针对已提交版差异的候选修正，不等于已证实左右晃动根因及游戏修复成功。
+3. takeoff改为air且仍有pending jumpTimer且vz>0，不再要求与!wasAir同一帧；成功后立即消耗jumpTimer，原sqrt高度系数只乘一次，实际takeoff信号进入既有RideState。保留Space事件截断、空中爬行奔跑、下骑长按、鼠标开关，Motion.h步态逻辑不改。
+
+验证状态
+两轮各30组完整离线回归、真实CommonLib安装链、EXE指令与MASM ABI检查通过。新增检查使用动态原生根/辅助轨道，确认身体骑姿及骨盆目标仍保持；按本轮Jumping无上升、下一帧InAir才上升的真实顺序确认一次性高度系数。用完整V版备份源码反向执行新增检查，分别在原生根保留与延迟起跳确认断言失败，W通过。以上不是游戏渲染测试，玩家左右晃动及人类跳跃的视觉表现尚未验收。
+
+部署完成
+目标E:\iniRePather-Skyrim\Mod Organizer 2\mods\【实验室】NPC坐骑-ai编码；仅DLL。
+DLL SHA256=5A3A9CA08B6177351A5DF207407666509CE9195B1B4FAD8BFA3BBF29E68BB956
+完整V版7024文件备份E:\iniRePather-Skyrim\Mod Organizer 2\backups\NPCMounts-root-takeoff-20261018-w
+INI保留用户当前OverrideNPCScale=0、NPCScale=1.5等全部值，不覆盖配置；ESP、动作资源、DoM撤回状态、目录/profile不改。未提交推送。
+完整7024文件部署核验，仅DLL改变；_evidence保存整轮原始日志、解析、源码、原记录/profile和两轮自检/反向失败证据。

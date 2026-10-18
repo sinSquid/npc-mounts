@@ -198,7 +198,7 @@ for rank,(name,_) in sources.items():
    target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
    target.write_bytes((neutralFile if is_additive(prefix,filename) else clips[rank]).read_bytes())
 folder=OAR/'rider';folder.mkdir(exist_ok=True)
-(folder/'config.json').write_text(json.dumps(dict(name='rider',disabled=True,priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
+(folder/'config.json').write_text(json.dumps(dict(name='rider',disabled=False,priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
 for filename in aliases:
  for prefix in ['', 'female/']:
   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)

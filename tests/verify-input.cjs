@@ -1,5 +1,5 @@
 const fs=require('fs'),path=require('path'),assert=require('assert');
-const repo=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(repo,'src/plugin.cpp'),'utf8');
+const repo=path.resolve(__dirname,'..'),source=fs.readFileSync(process.argv[2]||path.join(repo,'src/plugin.cpp'),'utf8');
 function extract(signature){const start=source.indexOf(signature);assert(start>=0);let end=source.indexOf('{',start)+1,depth=1;while(depth){const c=source[end++];if(c==='{')depth++;if(c==='}')depth--;}return source.slice(start,end);}
 const code=`
 #include <cassert>
@@ -33,7 +33,9 @@ struct PlayerCharacter {void *left{},*right{};void* GetEquippedObject(bool l)con
 struct UI {bool paused=false;bool GameIsPaused(){return paused;}static UI* GetSingleton(){static UI u;return &u;}};
 struct ControlMap {std::vector<UserEvents::INPUT_CONTEXT_ID> contextPriorityStack{UserEvents::INPUT_CONTEXT_ID::kGameplay};auto& GetRuntimeData(){return *this;}static ControlMap* GetSingleton(){static ControlMap m;return &m;}};
 }
+namespace RideDrive{bool left=false,right=false;float stick=0;void ResetInput(){left=right=false;stick=0;}}
 bool ridden=true;int spell;void* restoreSpell=&spell;std::unordered_set<std::uint64_t> suppressedButtons;
+int jumpRequests=0;bool JumpInput(void*,RE::InputEvent* e){if(e->AsButtonEvent()->IsDown()&&config.allowJump)++jumpRequests;return false;}
 ${extract('bool BlockRideButton(')}
 ${extract('struct RideInput final')} rideInput;
 void send(RE::InputEvent*& head){rideInput.ProcessEvent(&head,nullptr);}
@@ -44,11 +46,12 @@ int main(){
  }
  RE::ButtonEvent jump("Jump",57),sneak("Sneak",46),back("Back",31),exit("Activate",18);
  jump.next=&sneak;sneak.next=&back;back.next=&exit;RE::InputEvent* head=&jump;send(head);
- assert(head==&jump&&!head->next&&dismountHold.pressed);
+ assert(!head&&jumpRequests==1&&dismountHold.pressed);
+ RE::ButtonEvent jumpRelease("Jump",57,true);head=&jumpRelease;send(head);assert(!head&&jumpRequests==1);
  assert(!dismountHold.Tick(.25f,.25f)&&dismountHold.Tick(.001f,.25f));
  RE::ButtonEvent exitUp("Activate",18,true);head=&exitUp;send(head);assert(!head&&!dismountHold.pressed);
  RE::ButtonEvent preHeldRelease("Sneak",29,true);head=&preHeldRelease;send(head);assert(head==&preHeldRelease);
- RE::ThumbstickEvent stick;head=&stick;send(head);assert(stick.yValue==0);
+ RE::ThumbstickEvent stick;head=&stick;send(head);assert(stick.yValue==0&&stick.xValue==0&&RideDrive::stick==1);
  config.allowBackward=true;stick.yValue=-1;head=&stick;send(head);assert(stick.yValue==-1);config.allowBackward=false;
  config.allowBackward=true;RE::ButtonEvent altBack("Back",0x38);head=&altBack;send(head);assert(head==&altBack);config.allowBackward=false;
  config.blockSneak=false;RE::ButtonEvent allowedCtrl("Sneak",29);head=&allowedCtrl;send(head);assert(head==&allowedCtrl);config.blockSneak=true;
@@ -59,8 +62,16 @@ int main(){
  RE::ControlMap::GetSingleton()->contextPriorityStack.back()=RE::UserEvents::INPUT_CONTEXT_ID::kMenu;
  RE::ButtonEvent menuCtrl("",29);head=&menuCtrl;send(head);assert(head==&menuCtrl);
  RE::ControlMap::GetSingleton()->contextPriorityStack.back()=RE::UserEvents::INPUT_CONTEXT_ID::kGameplay;
+ RE::ButtonEvent turnL("Strafe Left",30),turnR("Strafe Right",32),turnLUp("Strafe Left",30,true),turnRUp("Strafe Right",32,true);
+ head=&turnL;send(head);assert(!head&&RideDrive::left);head=&turnR;send(head);assert(!head&&RideDrive::right);
+ head=&turnLUp;send(head);assert(!head&&!RideDrive::left);head=&turnRUp;send(head);assert(!head&&!RideDrive::right);
  ridden=false;RE::ButtonEvent normal("Sneak",29);head=&normal;send(head);assert(head==&normal);
- std::puts("PASS: actual input filter Ctrl/Alt press+release, mixed chain preserves jump/exit, backward stick, B casting, menus and unmounted input.");
+ RE::ButtonEvent unmountedJump("Jump",57);head=&unmountedJump;send(head);assert(head==&unmountedJump&&jumpRequests==1);
+ RE::ButtonEvent customJump("Jump",57),customRelease("Jump",57,true);
+ ridden=true;config.dismountKey=57;head=&customJump;send(head);assert(!head&&dismountHold.pressed&&jumpRequests==1);
+ head=&customRelease;send(head);assert(!head&&!dismountHold.pressed&&jumpRequests==1);config.dismountKey=0;
+ RE::UI::GetSingleton()->paused=true;head=&customJump;send(head);assert(head==&customJump&&jumpRequests==1);
+ std::puts("PASS: actual input filter consumes mounted jump press/release, one request, hold exit, Ctrl/Alt, backward, B, menu and unmounted pass-through.");
 }
 `;
 fs.writeFileSync(path.join(repo,'build/input-regression.cpp'),code);
