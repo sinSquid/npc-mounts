@@ -19,6 +19,9 @@ fs.writeFileSync(path.join(repo,'build/seat-regression.cpp'),`
 #include <limits>
 #include <numbers>
 #include "../src/Config.h"
+#include "../src/PosePoint.h"
+#include "../src/PoseAudit.h"
+PoseAudit audit;
 namespace RE {
 struct NiPoint3{float x{},y{},z{};NiPoint3 operator+(NiPoint3 b)const{return{x+b.x,y+b.y,z+b.z};}NiPoint3 operator-(NiPoint3 b)const{return{x-b.x,y-b.y,z-b.z};}NiPoint3 operator*(float k)const{return{x*k,y*k,z*k};}NiPoint3 operator/(float k)const{return{x/k,y/k,z/k};}};
 struct NiMatrix3 {float entry[3][3]{{1,0,0},{0,1,0},{0,0,1}};
@@ -40,13 +43,13 @@ struct hkbGeneratorOutput{
  struct Tracks{Master masterHeader;Header trackHeaders[1];};Tracks* tracks;
 };
 }
-namespace Crawl{RE::NiPoint3 sample{4,-18,42};bool Anchor(RE::Actor*,RE::NiPoint3& p,float){p={0,sample.y,sample.z};return true;}}
+namespace Crawl{RE::NiPoint3 sample{4,-18,42};bool Anchor(RE::Actor*,RE::NiPoint3& p,float){p=sample;return true;}}
 constexpr unsigned bones=99,frames=31,riderFrames=13;
 struct Pose{float t[4],q[4],s[4];};
 std::array<std::array<Pose,bones>,frames> animation;
 std::array<std::array<Pose,bones>,riderFrames> riderAnimation;
 std::array<std::array<char,64>,bones> names;std::array<std::int16_t,bones> parents;
-RE::NiPoint3 riderCenter;float riderDuration=0,riderTime=0,riderSway=0;int riderGait=0;
+RE::NiPoint3 riderCenter;float riderDuration=0,riderTime=0,riderSway=0,riderBlend=0;int riderGait=0;
 struct GraphBinding{std::shared_ptr<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;};
 struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
 std::mutex mutex;std::vector<GraphBinding> graphs;std::vector<GraphStamp> graphStamp;
@@ -61,6 +64,8 @@ ${extract('void Sample(')}
 ${extract('void SampleRider(')}
 ${extract('bool ResolveTarget(')}
 ${extract('bool Inverse(')}
+${extract('bool WorldBone(')}
+${extract('bool LoadRider(')}
 ${extract('void GeneratePose(')}
 ${extract('void Motion(')}
 ${extract('void Update(')}
@@ -69,10 +74,12 @@ int main(int argc,char** argv){
  assert(argc==3);std::ifstream in(argv[1],std::ios::binary);std::array<unsigned,4> magic;in.read(reinterpret_cast<char*>(magic.data()),16);
  in.read(reinterpret_cast<char*>(names.data()),sizeof(names));in.read(reinterpret_cast<char*>(parents.data()),sizeof(parents));in.read(reinterpret_cast<char*>(animation.data()),sizeof(animation));assert(in);
  std::array<RE::NiPoint3,bones> exitPositions;std::array<RE::NiMatrix3,bones> exitBasis;World(animation.back().data(),exitPositions,exitBasis);exitPelvis=exitPositions[5];
- std::ifstream rider(argv[2],std::ios::binary);rider.read(reinterpret_cast<char*>(magic.data()),16);assert((magic==std::array<unsigned,4>{0x524d504e,1,bones,riderFrames}));
- rider.read(reinterpret_cast<char*>(&riderDuration),4);std::array<std::array<char,64>,bones> riderNames;std::array<std::int16_t,bones> riderParents;
- rider.read(reinterpret_cast<char*>(riderNames.data()),sizeof(riderNames));rider.read(reinterpret_cast<char*>(riderParents.data()),sizeof(riderParents));rider.read(reinterpret_cast<char*>(riderAnimation.data()),sizeof(riderAnimation));assert(rider&&riderNames==names&&riderParents==parents);
- RE::NiPoint3 low{1e30f,1e30f,1e30f},high{-1e30f,-1e30f,-1e30f};for(const auto& frame:riderAnimation){World(frame.data(),exitPositions,exitBasis);low.x=std::min(low.x,exitPositions[5].x);low.y=std::min(low.y,exitPositions[5].y);low.z=std::min(low.z,exitPositions[5].z);high.x=std::max(high.x,exitPositions[5].x);high.y=std::max(high.y,exitPositions[5].y);high.z=std::max(high.z,exitPositions[5].z);}riderCenter=(low+high)*.5f;
+ assert(LoadRider(argv[2]));
+ {std::ifstream file(argv[2],std::ios::binary);std::vector<char> good((std::istreambuf_iterator<char>(file)),{});
+  for(float invalid:{-1.f,0.f,std::numeric_limits<float>::quiet_NaN()}){auto bad=good;std::memcpy(bad.data()+20+99*64+99*2+32,&invalid,4);{std::ofstream out("build/seat-invalid-rider.nmr",std::ios::binary);out.write(bad.data(),bad.size());}assert(!LoadRider("build/seat-invalid-rider.nmr"));}
+  assert(LoadRider(argv[2]));std::array<Pose,bones> sample;
+  for(unsigned frame=0;frame<riderFrames-1;++frame){SampleRider(riderDuration*frame/(riderFrames-1),sample.data());for(unsigned bone=0;bone<bones;++bone)for(unsigned n=0;n<4;++n){assert(std::abs(sample[bone].t[n]-riderAnimation[frame][bone].t[n])<.0001f);assert(std::abs(sample[bone].q[n]-riderAnimation[frame][bone].q[n])<.0001f);}}
+ }
  const int headerBytes=16+3*16,bytes=headerBytes+99*sizeof(Pose);std::vector<std::byte> buffer(bytes);
  auto* tracks=reinterpret_cast<RE::hkbGeneratorOutput::Tracks*>(buffer.data());
  tracks->masterHeader={bytes,3,{}};auto& h=tracks->trackHeaders[2];h={99,99,headerBytes,48,1,0,1,0};
@@ -98,13 +105,16 @@ int main(int argc,char** argv){
   const RE::NiPoint3 backLocal{4,-18,42};back.world.translate=mn.world.translate+mn.world.rotate*backLocal*ns;
   mn.spine=saddle?&wrong:&back;mn.saddle=saddle?&back:nullptr;
   Settings::Data cfg;cfg.seatHeight=12;cfg.seatForward=7;cfg.seatSide=-3;
+  // Y4.12 logged: raw bank X can exceed 56 while the displayed back stays near 4.
+  // The seat must follow the displayed back, independently of the bank's X.
+  Crawl::sample.x=56.325f;
   Update(&player,&mount,cfg,-1,{});assert(active);
-  const auto worldSeat=mn.world.translate+mn.world.rotate*RE::NiPoint3{saddle?1.f:-3.f,-11,54}*ns;
+  const auto worldSeat=mn.world.translate+mn.world.rotate*RE::NiPoint3{1.f,-11,54}*ns;
   auto expected=pn.world.rotate.Transpose()*(worldSeat-pn.world.translate)/ps;
   near(resolved(),expected);
   near(pn.world.translate+pn.world.rotate*resolved()*ps,worldSeat);
   const auto snapshot=resolved();pn.world.translate={-500,300,50};mn.world.translate=mn.world.translate+RE::NiPoint3{77,22,-15};back.world.translate=back.world.translate+RE::NiPoint3{77,22,-15};
-  expected=pn.world.rotate.Transpose()*(mn.world.translate+mn.world.rotate*RE::NiPoint3{saddle?1.f:-3.f,-11,54}*ns-pn.world.translate)/ps;
+  expected=pn.world.rotate.Transpose()*(mn.world.translate+mn.world.rotate*RE::NiPoint3{1.f,-11,54}*ns-pn.world.translate)/ps;
   near(resolved(),snapshot); // One immutable player-frame snapshot; no cross-thread root reread.
   Update(&player,&mount,cfg,-1,{});near(resolved(),expected);
   const auto rideTarget=resolved();RE::NiPoint3 exit{-72,21,0};
@@ -132,12 +142,12 @@ int main(int argc,char** argv){
  // Grounded locomotion uses the exact Phantom Horse clip. Its pelvis X is
  // discarded, while Y/Z motion remains centred and RiderSway-scaled.
  {
-  std::memcpy(buffer.data()+headerBytes,animation[0].data(),99*sizeof(Pose));target={7,-11,55};progress=-1;riderSway=1;Motion(0,false,3);wrote=false;
+  std::memcpy(buffer.data()+headerBytes,animation[0].data(),99*sizeof(Pose));target={7,-11,55};progress=-1;riderSway=1;Motion(.1f,false,3);assert(riderBlend>0&&riderBlend<1);Motion(.02f,false,3);assert(riderBlend==1);wrote=false;
   GeneratePose(nullptr,context,nullptr,output,0);assert(wrote);std::array<RE::NiPoint3,bones> ps;std::array<RE::NiMatrix3,bones> rs,sourceRs;std::array<RE::NiPoint3,bones> sourcePs;
-  World(riderAnimation[0].data(),sourcePs,sourceRs);World(reinterpret_cast<Pose*>(buffer.data()+headerBytes),ps,rs);
+  std::array<Pose,bones> sampled;SampleRider(riderTime,sampled.data());World(sampled.data(),sourcePs,sourceRs);World(reinterpret_cast<Pose*>(buffer.data()+headerBytes),ps,rs);
   near(ps[5],{target.x,target.y+sourcePs[5].y-riderCenter.y,target.z+sourcePs[5].z-riderCenter.z});
-  auto* actual=reinterpret_cast<Pose*>(buffer.data()+headerBytes);for(int n=0;n<4;++n){assert(std::abs(actual[6].t[n]-riderAnimation[0][6].t[n])<1e-5f);assert(std::abs(actual[6].q[n]-riderAnimation[0][6].q[n])<1e-5f);assert(std::abs(actual[6].s[n]-riderAnimation[0][6].s[n])<1e-5f);}
-  Motion(.2f,true,2);assert(riderGait==0&&riderTime==0);
+  auto* actual=reinterpret_cast<Pose*>(buffer.data()+headerBytes);float orientationDot=0;for(int n=0;n<4;++n){assert(std::abs(actual[6].t[n]-sampled[6].t[n])<1e-5f);orientationDot+=actual[6].q[n]*sampled[6].q[n];assert(std::abs(actual[6].s[n]-sampled[6].s[n])<1e-5f);}assert(std::abs(std::abs(orientationDot)-1.f)<1e-5f);
+  Motion(.1f,true,2);assert(riderGait==0&&riderBlend>0);Motion(.1f,true,2);assert(riderBlend==0&&riderTime==0);
  }
  // Poison native root/jump translations: all base pose tracks become rider pose,
  // while the separate extracted-motion track still reaches native physics.
@@ -189,6 +199,12 @@ int main(int argc,char** argv){
  }
  RE::NiMatrix3 matrix;matrix.entry[0][0]=2;matrix.entry[0][1]=.3f;matrix.entry[1][0]=.7f;matrix.entry[1][1]=3;matrix.entry[2][2]=.5f;
  RE::NiMatrix3 inverse;assert(Inverse(matrix,inverse));auto identity=matrix*inverse;for(int i=0;i<3;i++)for(int j=0;j<3;j++)assert(std::abs(identity.entry[i][j]-(i==j))<1e-5);
+ // Mapped bone beyond the shortened output must be rejected before any write.
+ tracks->masterHeader={bytes,3,{}};h={99,99,headerBytes,48,1,0,1,0};graphs[0].count=126;graphs[0].parents.resize(126,0);graphs[0].map[6]=100;
+ {auto before=buffer;wrote=false;GeneratePose(nullptr,context,nullptr,output,0);assert(!wrote&&before==buffer);}graphs[0].map[6]=6;
+ // Parent-chain calculation agrees with the full-skeleton reference.
+ for(const auto& frame:riderAnimation){std::vector<Pose> poses(frame.begin(),frame.end());std::vector<std::int16_t> hierarchy(parents.begin(),parents.end());std::array<RE::NiPoint3,bones> points;std::array<RE::NiMatrix3,bones> bases;World(frame.data(),points,bases);
+  for(int bone:{3,4,5,12}){RE::NiPoint3 point;RE::NiMatrix3 basis;assert(WorldBone(poses,hierarchy,bone,point,basis));near(point,points[bone]);for(int i=0;i<3;++i)for(int j=0;j<3;++j)assert(std::abs(basis.entry[i][j]-bases[bone].entry[i][j])<.0001f);}}
  // XPMSSE 126-track output: extension tracks are preserved in every phase.
  const int extendedBytes=headerBytes+126*sizeof(Pose);std::vector<std::byte> extended(extendedBytes,std::byte{0x5a});
  auto* xt=reinterpret_cast<RE::hkbGeneratorOutput::Tracks*>(extended.data());xt->masterHeader={extendedBytes,3,{}};xt->trackHeaders[2]={126,126,headerBytes,48,1,0,1,0};
@@ -197,6 +213,6 @@ int main(int argc,char** argv){
   for(unsigned i=headerBytes+99*sizeof(Pose);i<extended.size();++i)assert(extended[i]==std::byte{0x5a});}
  graphs[0].count=99;graphs[0].parents.resize(99);wrote=false;auto unchanged=extended;GeneratePose(nullptr,context,nullptr,xo,0);assert(!wrote&&extended==unchanged);
  Clear();assert(!active&&!wrote&&!finished&&graphs.empty());
- std::puts("PASS: static/Phantom rider sources, zero-X centred motion, mount-relative entry, native camera/extracted motion, pelvis targeting/scales/output bounds. Engine rendering untested.");
+ std::puts("PASS: static/Phantom rider sources, shared-back X and zero extra lateral rider motion, mount-relative entry, native camera/extracted motion, pelvis targeting/scales/output bounds. Engine rendering untested.");
 }
 `);

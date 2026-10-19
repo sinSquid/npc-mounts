@@ -17,9 +17,10 @@ struct hkVector4{};
 struct TESObjectCELL{unsigned id=1;bool attached=true;struct{void* worldSpace=nullptr;}data;auto& GetRuntimeData(){return data;}unsigned GetFormID(){return id;}bool IsAttached(){return attached;}};
 inline TESObjectCELL cell;
 struct TESForm{template<class T>static T* LookupByID(unsigned id){return id==1?&cell:nullptr;}};
-struct Actor{unsigned id=10;bool dead=false,loaded=true;NiPoint3 pos;TESObjectCELL* parent=&cell;
+struct Actor{enum class BOOL_FLAGS:unsigned{kForceAnimGraphUpdate=1u<<29};struct Bits{unsigned value=0;void set(BOOL_FLAGS f){value|=unsigned(f);}void reset(BOOL_FLAGS f){value&=~unsigned(f);}unsigned underlying(){return value;}};struct Runtime{Bits boolFlags;}runtime;
+ unsigned id=10;bool dead=false,loaded=true;NiPoint3 pos;TESObjectCELL* parent=&cell;
  struct Controller{float speed=300;void SetLinearVelocityImpl(hkVector4){speed=0;}}cc;
- unsigned GetFormID(){return id;}bool IsDead(){return dead;}bool IsInKillMove(){return false;}auto* GetParentCell(){return parent;}
+ unsigned GetFormID(){return id;}bool IsDead(){return dead;}bool IsInKillMove(){return false;}auto* GetParentCell(){return parent;}auto& GetActorRuntimeData(){return runtime;}
  void AddToFaction(void*,int){}void NotifyAnimationGraph(const char*){}
  struct Ref{Actor* p;Actor* get(){return p;}Actor* operator->(){return p;}explicit operator bool()const{return p;}};
  struct Handle{Actor* p;Ref get()const{return {p};}};Handle GetHandle(){return {this};}
@@ -46,8 +47,8 @@ int nativeMoves=0;
 void originalMovement(RE::Actor* a,float dt){++nativeMoves;a->pos.x+=100*dt;}
 ${take('src/RideHooks.h','inline void MovementDelta(')}
 }
-struct Ptr{RE::Actor* get(){return nullptr;}};struct Handle{Ptr get(){return {};}}ridden;
-bool Riding(RE::Actor*){return false;}void AuditMotionStage(RE::Actor*,const char*){}void AuditLocation(RE::Actor*){}void HoldPose(RE::Actor*){}
+struct Ptr{RE::Actor* get(){return nullptr;}};struct Handle{Ptr get(){return {};}}ridden;RE::Actor* rideActor=nullptr;
+bool Riding(RE::Actor* a){return a==rideActor;}void AuditMotionStage(RE::Actor*,const char*){}void AuditLocation(RE::Actor*){}void HoldPose(RE::Actor*){}
 bool RideReady(RE::Actor*,RE::Actor*){return true;}void SyncMount(RE::Actor*,RE::Actor*){}
 struct State{bool posePending=false,restoreRequested=false;};std::unordered_map<unsigned,State>targets;void* mountFaction=nullptr;
 bool Converted(RE::Actor* a){return targets.contains(a->id);}bool ActorReady(RE::Actor* a){return a->loaded;}
@@ -65,9 +66,10 @@ int main(){
  actor.pos={1000,200,300};NPCUpdate(&actor,.016f);assert(actor.pos.x>=1000&&actor.pos.y==200&&RideHooks::nativeMoves==3); // No teleport rollback.
  actor.pos={};RE::Actor outer;RideHooks::placedActor=&outer;NPCUpdate(&actor,.016f);assert(RideHooks::placedActor==&outer);RideHooks::placedActor=nullptr;
  Extras::bound=false;NPCUpdate(&actor,.016f);assert(actor.pos.x>0);
+ RE::Actor mount;mount.id=12;rideActor=&mount;NPCUpdate(&mount,.016f);assert(!(mount.runtime.boolFlags.value&(1u<<29)));rideActor=nullptr;
  targets[actor.id].posePending=true;NPCUpdate(&actor,.016f);assert(targets[actor.id].posePending&&SKSE::tasks.queue.size()==1);SKSE::tasks.Run();assert(!targets[actor.id].posePending&&Crawl::resumes==1);
  NPCUpdate(&actor,.016f);assert(Crawl::resumes==1);
  targets[actor.id]={true,true};Crawl::released=false;NPCUpdate(&actor,.016f);SKSE::tasks.Run();assert(targets[actor.id].posePending); // B/pending restore does not restart conversion.
- puts("PASS: production NPCUpdate + anchor gate + movement hook: 1000 fixed frames still animate, no autonomous translation; release/other actors/forced relocation pass, nested scope restored. Engine doubles, not game QA.");
+ puts("PASS: production NPCUpdate + anchor gate + movement hook: 1000 fixed frames still animate, no new force-update flag; release/other actors/forced relocation pass, nested scope restored. Engine doubles, not game QA.");
 }
 `);

@@ -177,7 +177,7 @@ for key in entries:
  if '/' in relative and not relative.startswith('female/'):continue
  filename=relative.rsplit('/',1)[-1]
  locomotion=any(token in filename for token in ['walk','run','sprint','turn']) and not any(token in filename for token in ['attack','block','whirlwind','behavior'])
- if locomotion or filename.startswith(('mt_idle','mt_jump')) or filename in ['sneakmtidle.hkx','jumpstart.hkx','jumpfall.hkx','jumpland.hkx','jumpstart_sprint.hkx','jumpfall_sprint.hkx','jumpland_sprint.hkx']:
+ if locomotion or 'swim' in filename or filename.startswith(('mt_idle','mt_jump')) or filename in ['sneakmtidle.hkx','jumpstart.hkx','jumpfall.hkx','jumpland.hkx','jumpstart_sprint.hkx','jumpfall_sprint.hkx','jumpland_sprint.hkx']:
   aliases.add(filename)
   aliasBindings[relative]=load_skyrim_animation(str(extract(key.replace('\\','/')))).blend_hint
 # Neutralize additive overlays instead of applying an absolute whole-body pose twice.

@@ -1,7 +1,7 @@
 // Source/float32 model checks only. Does not compile or execute the C++ plugin.
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const root=path.resolve(__dirname,'..'),header=fs.readFileSync(path.join(root,'src/Config.h'),'utf8'),cpp=fs.readFileSync(path.join(root,'src/Config.cpp'),'utf8');
-const expected={NPCScale:[.5,3,.05],SpeedMultiplier:[1,2,.05],DismountHoldSeconds:[.25,2,.05],JumpHeightMultiplier:[1,3,.1],SeatHeight:[0,60,.5],SeatForward:[-50,50,.5],SeatSide:[-30,30,.5],RiderSway:[0,1,.05],HeadingDegrees:[-180,180,1],RunThreshold:[40,600,5],SprintThreshold:[80,1200,5]};
+const expected={NPCScale:[.5,3,.05],SpeedMultiplier:[1,2,.05],DismountHoldSeconds:[.25,2,.05],JumpHeightMultiplier:[1,4,.1],SeatHeight:[0,60,.5],SeatForward:[-50,50,.5],SeatSide:[-30,30,.5],RiderSway:[0,1,.05],HeadingDegrees:[-180,180,1],RunThreshold:[40,600,5],SprintThreshold:[80,1200,5]};
 const entries=[...header.matchAll(/\{"(\w+)",\s*"[^"]+",\s*&Data::\w+,\s*([\d.\-]+)f,\s*([\d.\-]+)f,\s*([\d.\-]+)f\}/g)];assert.equal(entries.length,Object.keys(expected).length);
 const f32=Math.fround;
 for(const [,key,...numbers]of entries){const [lo,hi,step]=numbers.map(Number);assert.deepEqual([lo,hi,step],expected[key]);assert(step>=.05);assert(Math.abs((hi-lo)/step-Math.round((hi-lo)/step))<1e-7);

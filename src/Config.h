@@ -23,7 +23,7 @@ inline constexpr FloatField floats[] = {
     {"NPCScale", "NPC 缩放", &Data::npcScale, .5f, 3.f, .05f},
     {"SpeedMultiplier", "移动速度倍率", &Data::speedMultiplier, 1.f, 2.f, .05f},
     {"DismountHoldSeconds", "下骑长按门槛（秒，必须超过）", &Data::holdSeconds, .25f, 2.f, .05f},
-    {"JumpHeightMultiplier", "骑乘跳跃高度系数", &Data::jumpHeightMultiplier, 1.f, 3.f, .1f},
+    {"JumpHeightMultiplier", "骑乘跳跃高度系数", &Data::jumpHeightMultiplier, 1.f, 4.f, .1f},
     {"SeatHeight", "骨盆距背部高度（NPC 模型单位）", &Data::seatHeight, 0.f, 60.f, .5f},
     {"SeatForward", "座位前后偏移", &Data::seatForward, -50.f, 50.f, .5f},
     {"SeatSide", "座位左右偏移", &Data::seatSide, -30.f, 30.f, .5f},

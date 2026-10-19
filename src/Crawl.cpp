@@ -1,6 +1,7 @@
 #include "pch.h"
 #include "Crawl.h"
 #include "PosePoint.h"
+#include "PoseAudit.h"
 #include <array>
 #include <fstream>
 #include <mutex>
@@ -18,12 +19,17 @@ struct Graph{RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count{}
 struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
 struct ActorPose{const RE::NiAVObject* root{};std::vector<Graph> graphs;std::vector<GraphStamp> graphStamp;Frame pose{};int gait=0;float time=0;bool wrote=false;bool publish=true;bool bound=false;};
 std::unordered_map<RE::FormID,ActorPose> actors;
+std::unordered_map<const void*,RE::FormID> graphOwners;
+RE::NiPoint3 anchorPoint{0,0,0};
+unsigned anchorBone=0;
 struct Retry{const RE::NiAVObject* root{};float remaining=0;};
 std::unordered_map<RE::FormID,Retry> retries;
 std::mutex mutex;
+PoseAudit audit;
 bool loaded=false;
-using Generate=void(*)(RE::hkbGenerator*,const RE::hkbContext&,const RE::hkbGeneratorOutput**,RE::hkbGeneratorOutput&,float);
-Generate original{};
+void Reindex(){
+    graphOwners.clear();for(const auto& [id,actor]:actors)for(const auto& graph:actor.graphs)graphOwners[&graph.graph->characterInstance]=id;
+}
 
 void Blend(const Frame& a,const Frame& b,float t,Frame& out){
     for(unsigned i=0;i<bones;++i){
@@ -61,26 +67,32 @@ bool OverlayBone(std::string_view name){
         n.find("middle")!=std::string::npos||n.find("ring")!=std::string::npos||n.find("pinkie")!=std::string::npos);
 }
 void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE::hkbGeneratorOutput** children,RE::hkbGeneratorOutput& output,float offset){
-    original(self,context,children,output,offset);
     std::scoped_lock lock(mutex);
-    for(auto& [id,actor]:actors)for(const auto& binding:actor.graphs){
+    ++audit.calls;
+    const auto owner=graphOwners.find(context.character);if(owner==graphOwners.end())return;
+    const auto found=actors.find(owner->second);if(found==actors.end())return;
+    const auto id=found->first;auto& actor=found->second;
+    for(const auto& binding:actor.graphs){
         if(&binding.graph->characterInstance!=context.character)continue;
-        if(!actor.publish)return;
-        if(!output.tracks)return;
+        ++audit.matched;
+        if(!actor.publish){audit.Reject(0);return;}
+        if(!output.tracks){audit.Reject(1);return;}
         const auto& header=output.tracks->masterHeader;
-        if(header.numTracks<3||header.numTracks>128||header.numBytes<16+header.numTracks*16)return;
+        if(header.numTracks<3||header.numTracks>128||header.numBytes<16+header.numTracks*16){audit.Reject(2);return;}
         const auto& track=output.tracks->trackHeaders[2];
+        audit.TrackInfo(track,binding.count);
         if((actor.bound?track.numData<15:track.numData<bones)||track.numData>binding.count||track.capacity<track.numData||track.elementSizeBytes!=sizeof(Pose)||
             static_cast<int>(track.flags)!=0||static_cast<int>(track.type)!=1||track.onFraction<=0||
             track.dataOffset<16+header.numTracks*16||track.dataOffset>header.numBytes||
-            track.numData*sizeof(Pose)>header.numBytes-track.dataOffset)return;
+            track.numData*sizeof(Pose)>header.numBytes-track.dataOffset){audit.Reject(3);return;}
         auto* data=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
-        if(std::any_of(binding.map.begin(),binding.map.end(),[&](unsigned index){return index!=std::numeric_limits<unsigned>::max()&&index>=static_cast<unsigned>(track.numData);}))return;
+        if(std::any_of(binding.map.begin(),binding.map.end(),[&](unsigned index){return index!=std::numeric_limits<unsigned>::max()&&index>=static_cast<unsigned>(track.numData);})){audit.Reject(4);return;}
         for(unsigned i=0;i<bones;++i)if(binding.map[i]!=std::numeric_limits<unsigned>::max()){
             auto* destination=reinterpret_cast<Pose*>(data+binding.map[i]*sizeof(Pose));
             if(actor.bound)std::memcpy(destination->q,actor.pose[i].q,sizeof(destination->q));
             else std::memcpy(destination,&actor.pose[i],sizeof(Pose));
         }
+        ++audit.writes;
         if(!actor.wrote){actor.wrote=true;spdlog::info("Native crawl output active ref={:08X} tracks={}",id,track.numData);}
         // Only animation output is touched, before skin/SMP publication.
         // Unmapped custom bones and the character controller remain untouched.
@@ -105,8 +117,11 @@ bool Install(const char* path){
         }
     }
     if(file.peek()!=EOF)return false;
-    REL::Relocation<std::uintptr_t> graph{RE::VTABLE_hkbBehaviorGraph[0]};
-    original=reinterpret_cast<Generate>(graph.write_vfunc(0x17,GeneratePose));loaded=true;
+    unsigned spine=0;while(spine<bones&&std::string_view(names[spine].data())!="NPC Spine2 [Spn2]")++spine;
+    if(spine==bones)return false;
+    anchorBone=spine;
+    const auto rest=PosePoint(clips[0].frames.front(),parents,static_cast<int>(spine));anchorPoint={rest[0],rest[1],rest[2]};
+    loaded=true;
     return true;
 }
 std::vector<GraphStamp> Snapshot(const RE::BSAnimationGraphManager& manager){
@@ -158,9 +173,9 @@ bool BindMode(RE::Actor* actor,bool publish,bool bound){
     if(result.graphs.empty()){
         std::scoped_lock lock(mutex);auto& retry=retries[actor->GetFormID()];
         if(retry.root!=result.root)spdlog::warn("Crawl skeleton incompatible ref={:08X}",actor->GetFormID());
-        retry={result.root,1.f};actors.erase(actor->GetFormID());return false;
+        retry={result.root,1.f};actors.erase(actor->GetFormID());Reindex();return false;
     }
-    std::scoped_lock lock(mutex);retries.erase(actor->GetFormID());actors.insert_or_assign(actor->GetFormID(),std::move(result));return true;
+    std::scoped_lock lock(mutex);retries.erase(actor->GetFormID());actors.insert_or_assign(actor->GetFormID(),std::move(result));Reindex();return true;
 }
 bool Bind(RE::Actor* actor,bool publish){return BindMode(actor,publish,false);}
 bool BindBound(RE::Actor* actor){return BindMode(actor,true,true);}
@@ -208,16 +223,13 @@ bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway){
     std::scoped_lock lock(mutex);
     const auto it=actors.find(actor->GetFormID());
     if(it==actors.end()||it->second.root!=actor->Get3D())return false;
-    for(unsigned i=0;i<bones;++i)if(std::string_view(names[i].data())=="NPC Spine2 [Spn2]"){
-        const auto rest=PosePoint(clips[0].frames.front(),parents,static_cast<int>(i));
-        (void)sway;
-        // The mount centreline is authoritative. Rider motion is authored by the
-        // dedicated Phantom Horse clip in Seat, never by a second sine wave here.
-        point={0.f,rest[1],rest[2]};return true;
-    }
-    return false;
+    const auto back=PosePoint(it->second.pose,parents,anchorBone);
+    (void)sway;point={back[0],anchorPoint.y,anchorPoint.z};return true;
 }
 bool Working(RE::Actor* actor){std::scoped_lock lock(mutex);auto it=actor?actors.find(actor->GetFormID()):actors.end();return it!=actors.end()&&it->second.wrote;}
-void Remove(RE::FormID id){std::scoped_lock lock(mutex);actors.erase(id);retries.erase(id);}
-void Clear(){std::scoped_lock lock(mutex);actors.clear();retries.clear();}
+void LogOutput(){std::scoped_lock lock(mutex);
+    spdlog::debug("Crawl output calls={} matched={} writes={} rejected={},{},{},{},{} track=count:{}/{} capacity:{} flags:{} type:{} stride:{} offset:{} fraction:{}",
+        audit.calls,audit.matched,audit.writes,audit.rejected[0],audit.rejected[1],audit.rejected[2],audit.rejected[3],audit.rejected[4],audit.count,audit.bound,audit.capacity,audit.flags,audit.type,audit.bytes,audit.offset,audit.fraction);audit={};}
+void Remove(RE::FormID id){std::scoped_lock lock(mutex);if(actors.erase(id))Reindex();retries.erase(id);}
+void Clear(){std::scoped_lock lock(mutex);actors.clear();graphOwners.clear();retries.clear();}
 }

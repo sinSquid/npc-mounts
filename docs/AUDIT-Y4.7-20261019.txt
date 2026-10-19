@@ -1,0 +1,19 @@
+NPCMounts 0.4.4 Y4.7 — 2026-10-19
+
+Scope: implement the eight accepted static-review findings with local changes.
+
+1. Seat checks every mapped bone against the current output track count before writing. A larger bound skeleton does not imply a full output buffer at every LOD.
+2. Rider sampling uses 12 intervals for the actual 13-frame clip, matching the source frame_duration=0.0361110829 and duration=0.4333330095. No extra last-to-first interpolation interval is inserted.
+3. Grounded locomotion blends to/from the dynamic rider pose over 0.12 seconds. State advances once per player update, not once per animation graph callback. Pose and centred Y/Z movement use the same blend; dynamic X remains zero.
+4. Missing initial pose output releases the ride through existing emergency dismount after three seconds of active updates. A ready pose resets the wait budget before the normal entry transition advances. Paused game time is excluded by the existing Tick pause gate.
+5. Production Rider loader rejects zero, negative and non-finite scale values before installing the Seat hook. Tests call the same loader against actual packaged data and corrupted variants.
+6. Seat computes the pelvis and COM-parent chains rather than two full world skeletons. The source pelvis uses PosePoint. Crawl caches the constant resting back point at resource load.
+7. Crawl keeps character-instance-to-owner lookup under its existing mutex, rebuilding only when bindings change. Remove and Clear invalidate the lookup; pose generation no longer scans every controlled NPC.
+8. Wardrobe reuses one inventory snapshot for clothing restoration. The inventory scan used only to observe diagnostic results is skipped when its info log level is disabled.
+
+Unchanged: Motion.h gait decisions, riding input/physics hooks, jump requests, riding OAR config and all 636 alias clips, ESP, INI/user values, native animation banks and co-save formats.
+
+Validation: one offline self-check cycle covering production functions, native hook install/ABI evidence, actual motion bank parsing and output bounds. The seat fixture initially compared quaternion components even though q and -q represent the same orientation; it now compares orientation dot product and the affected/remaining checks were resumed. No runtime code was changed for that fixture issue. Engine doubles do not constitute Skyrim visual QA.
+
+Deployment/backup details and frozen hashes: reports/Y4.7-static-20261019.
+Only NPCMounts.dll is intended for deployment. No automatic commit or push.

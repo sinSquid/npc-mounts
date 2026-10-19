@@ -1,0 +1,11 @@
+Y4.11 CTD修复与水中安全发布方案，2026-10-20
+
+CTD：Y4.10首次上骑在Seat::Collect遍历subManagers后崩溃，日志只完成顶层116骨绑定；崩溃栈出现FirstPerson BShkbAnimationGraph并在NPCMounts骨骼扫描中访问无效地址。撤销Seat/Crawl全部subManagers遍历及相应替身测试，恢复已实机可启动的Y4.9顶层图绑定。未尝试跳过FirstPerson后继续遍历，因为其余子对象生命周期同样未经接口保证。
+
+水中：Y4.9实机计数证明持续游泳时全局Generate仍运行，但玩家/NPC顶层角色图不再发布，拒绝计数为0。现改用Actor官方kForceAnimGraphUpdate标志：PlayerCharacter::Update进入原更新前，对骑乘玩家重置再置位；Character::Update进入原更新前，对正在被骑乘的NPC执行同样操作。这与既有HoldPose维持restrained NPC姿态输出的方法一致，不读取额外管理器、图或骨架内存，不修改游泳物理状态。Seat/Crawl现有回调仍负责严格校验和写姿态。
+
+X轴：保留Y4.10中与CTD无关的座位修复。Seat只读取已存在的Spine2场景节点最终世界位置，转换为NPC根模型X，让玩家座位下一帧跟随日志确认的约±4横移；Y/Z保持稳定Crawl锚点，不改NPC COM、姿态、步态或相位。
+
+边界：离线测试能验证标志设置位置、原更新调用顺序、座位坐标换算和既有回归，不能证明游戏引擎在水中一定恢复图发布；Y4.11必须游戏验证，但不存在Y4.10的子管理器解引用路径。
+
+部署：完整667文件计划及部署前Y4.9备份验证通过，仅SKSE/Plugins/NPCMounts.dll改变。最终DLL SHA256=634D2C2102460696BFEE5E0D436620BF1E66F020E958139F1DCB501BBE948F7D；其余666文件、profile、INI、ESP和动作资源保持。证据目录reports/Y4.11-ctd-safe-water-20261020。未提交推送。

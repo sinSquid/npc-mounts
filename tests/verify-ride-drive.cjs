@@ -7,6 +7,7 @@ assert.equal((npc.match(/SyncMount\(/g)||[]).length,0);
 const playerUpdate=source.slice(source.indexOf('void PlayerUpdate('),source.indexOf('void PlayerUpdateInMain('));
 assert.equal((playerUpdate.match(/SyncMount\(/g)||[]).length,1);
 assert(playerUpdate.indexOf('originalPlayerUpdate(')<playerUpdate.indexOf('SyncMount('));
+assert(!playerUpdate.includes('kForceAnimGraphUpdate'));
 assert(!source.slice(source.indexOf('void Tick('),source.indexOf('using Update =')).includes('SyncMount('));
 assert(source.includes('rideMotion.jumping||wasAir||jumpTimer>0.f'));
 fs.writeFileSync(path.join(root,'build/ride-drive-regression.cpp'),`

@@ -1,0 +1,13 @@
+Y4.10 水中图绑定与横向座位修复（已撤回，导致CTD），2026-10-20
+
+实机依据：Y4.9日志20261020-002349-946-14956-8550687，471493字节。持续游泳状态5时Seat/Crawl的全局Generate调用仍增长，但已绑定角色matched和writes降为0，所有拒绝计数保持0；说明不是轨道、映射、父链或资源校验拒绝，而是实际生成图不在旧绑定集合。BSAnimationGraphManager除顶层graphs外还有subManagers，旧Snapshot/Matches/Collect/BindMode全部只遍历顶层，测试中的“waterGraph”也错误地放在顶层，未覆盖真实路径。
+
+修复：Seat和Crawl的图快照、兼容绑定及重绑定检测遍历完整subManagers树，以manager地址去重防止重复/环；水中子管理器出现、移除或换骨架时，下一次Refresh/Update会重建绑定。仍逐图验证骨名、父级、轨道边界，不放宽校验。新增顶层＋子管理器创建/移除回归。
+
+横向依据：同一日志中Seat target X约0，玩家最终模型骨盆X约0，而NPC最终渲染Spine2 X随动作约-4.33至+4.15；玩家逻辑位置和NPC逻辑位置始终一致。Y4.8修改NPC COM已由实测证明加重偏移并撤销。Y4.10在Seat::Update中读取已发布Spine2相对NPC根的模型X，只把该X作为下一帧座位横向值；Y/Z继续使用Crawl稳定锚，NPC Crawl姿态、步态和相位不变。已有不同根缩放/旋转/位置与SaddleBone回归更新为验证这一坐标转换。
+
+范围：保留已验证步态、骑手OAR、游泳别名、跳跃、控制器、配置和DoM撤回状态。Y4.9限频诊断仍受LogLevel控制，便于确认水中matched恢复；未新增常驻扫描或场景节点写入。
+
+验证边界：生产Release构建和一轮离线回归只能验证管理器树生命周期、姿态输出及坐标换算，不能替代本机水中视觉验收。
+
+部署后用户首次上骑即CTD。crash-2026-10-20-00-38-01.log确认NPCMounts.dll+0038371访问无效对象，调用栈及运行日志停在Seat bind accepted之后；崩溃对象包含FirstPerson图，直接原因是新增subManagers遍历把不安全的运行时图纳入兼容骨骼扫描。已立即恢复Y4.9 DLL（SHA256=90AE2A8F62DD26DAE1D7C1EF091E34C75D92D1C038FDDDAD5CBFA680A9A814CD），Y4.10不得再次部署。原完整备份保留在reports/Y4.10-water-graph-seat-20261020/backup-mod。

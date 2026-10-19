@@ -42,7 +42,7 @@ int main(){
  assert(originalDefaults.mouseSteering);
  for(bool enabled:{false,true}){cfg.mouseSteering=enabled;assert(Settings::Write("build/config-mouse.ini",cfg));assert(Settings::Read("build/config-mouse.ini").mouseSteering==enabled);}
  for(bool undress:{false,true}){cfg.undressOnConvert=undress;assert(Settings::Write("build/config-undress.ini",cfg));assert(Settings::Read("build/config-undress.ini").undressOnConvert==undress);}
- for(float v:{-1.f,.8f,1.f,1.24f,1.26f,2.f,3.f,9.f}){cfg.jumpHeightMultiplier=v;Settings::Normalize(cfg);assert(cfg.jumpHeightMultiplier>=1.f&&cfg.jumpHeightMultiplier<=3.f);assert(std::abs(cfg.jumpHeightMultiplier*10-std::round(cfg.jumpHeightMultiplier*10))<.0001f);assert(Settings::Write("build/config-roundtrip.ini",cfg));assert(Settings::Read("build/config-roundtrip.ini").jumpHeightMultiplier==cfg.jumpHeightMultiplier);}
+ for(float v:{-1.f,.8f,1.f,1.24f,1.26f,2.f,3.f,3.7f,4.f,9.f}){cfg.jumpHeightMultiplier=v;Settings::Normalize(cfg);assert(cfg.jumpHeightMultiplier>=1.f&&cfg.jumpHeightMultiplier<=4.f);assert(std::abs(cfg.jumpHeightMultiplier*10-std::round(cfg.jumpHeightMultiplier*10))<.0001f);assert(Settings::Write("build/config-roundtrip.ini",cfg));assert(Settings::Read("build/config-roundtrip.ini").jumpHeightMultiplier==cfg.jumpHeightMultiplier);}
  std::puts("PASS: actual INI read/write/limits, NaN/invalid values, strict hold threshold, release/reset and 30/60/144 FPS.");
 }
 `);

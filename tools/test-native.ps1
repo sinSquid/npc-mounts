@@ -4,6 +4,8 @@ Set-Location (Split-Path $PSScriptRoot -Parent)
 $node='D:\developer\nodejs\node.exe'
 $vc='C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat'
 & "$PSScriptRoot\test-hook-install.ps1"
+& "$PSScriptRoot\test-pose-root.ps1"
+& "$PSScriptRoot\test-water-ride.ps1"
 & $node 'tests/verify-native-abi.cjs'
 if($LASTEXITCODE){throw 'Installed engine ABI evidence differs; do not deploy collision hook'}
 & $node 'tools/inspect-ride-entrypoints.cjs'

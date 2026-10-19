@@ -16,6 +16,8 @@
 #include "RideDrive.h"
 #include "RideHooks.h"
 #include "Diagnostics.h"
+#include "PoseOutput.h"
+#include "WaterRide.h"
 
 namespace Mounts {
 constexpr auto plugin = "NPCMounts.esp";
@@ -154,7 +156,7 @@ void SyncMount(RE::Actor* mount, RE::Actor* player, bool force = false)
     cc->flags.set(RE::CHARACTER_FLAGS::kNoCharacterCollisions);
     cc->SetLinearVelocityImpl(RE::hkVector4());
     cc->fallTime = 0.f;
-    const auto position = player->GetPosition();
+    auto position = player->GetPosition();position.z-=WaterRide::Offset();
     if (force || mount->GetPosition() != position) mount->SetPosition(position, true);
     // Use the reference rotation API instead of relying only on a heading change
     // while the actor's autonomous movement is blocked.
@@ -199,6 +201,7 @@ void SetMotion(RE::Actor* actor, State& state, int animation)
     if (animation == 3 && previous != 3) actor->NotifyAnimationGraph("SprintStart");
 }
 void ResetPose(RE::Actor* actor,State& state){
+    if(!Riding(actor)){WaterRide::Recover(actor);WaterRide::Remove(actor);}
     Crawl::Bind(actor);
     actor->AddToFaction(mountFaction,0);state.animation=0;
     StopMotion(actor);actor->NotifyAnimationGraph("IdleForceDefaultState");
@@ -211,6 +214,7 @@ bool Dismount(bool emergency = false, bool = true)
     auto mount = ridden.get();
     auto* player = RE::PlayerCharacter::GetSingleton();
     ApplySpeed(player,1.f,playerSpeedDelta);
+    WaterRide::End(player,mount.get());
     Seat::Clear();dismountHold.Release();
     if(downActive||upActive){auto& flags=player->GetActorRuntimeData().boolFlags;flags.reset(downFlags);flags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags));}
     upActive=false;
@@ -333,6 +337,7 @@ void Restore(RE::Actor* actor)
         Dismount(true);
     }
     if(scaleChanged)RestoreScale(actor,originalScale);
+    WaterRide::Recover(actor);WaterRide::Remove(actor);
     ApplySpeed(actor,1.f,speedDelta);
     actor->RemoveFromFaction(mountFaction);
     StopMotion(actor);
@@ -379,6 +384,7 @@ void Mount(RE::Actor* actor)
     ResetPose(actor,targets.at(actor->GetFormID()));
     if(auto* proxy=actor->GetCharController()){proxy->SetLinearVelocityImpl(RE::hkVector4());proxy->outVelocity=RE::hkVector4();proxy->pushDelta=RE::hkVector4();proxy->fallTime=0.f;}
     ridden = actor->GetHandle();
+    WaterRide::Begin(player,actor);
     RideDrive::Begin();
     RideCollision::Update(player,actor);
     Travel::Remember(actor);
@@ -469,8 +475,11 @@ void Tick(RE::Actor* player, float delta)
         Seat::Refresh(player);
         SetMotion(mount.get(),targets.at(mount->GetFormID()),0);Crawl::Update(mount.get(),0,delta);
         if(upActive&&(!Crawl::Working(mount.get())||!Seat::Working())){
+            transitionTime=std::min(transitionTime,0.f)-std::clamp(delta,0.f,.1f);
+            if(transitionTime<=-3.f){Dismount(true);RE::SendHUDMessage::ShowHUDMessage("上马姿态未能输出，已解除骑乘；可重新尝试");return;}
             Seat::Motion(delta,false,0);Seat::Update(player,mount.get(),config,1.f,downOffset);return;
         }
+        transitionTime=std::max(transitionTime,0.f);
         transitionTime+=delta;
         const float duration=upActive?mountTransitionSeconds:dismountTransitionSeconds;
         const float t=std::clamp(transitionTime/duration,0.f,1.f);
@@ -515,9 +524,17 @@ void Tick(RE::Actor* player, float delta)
             const auto* third=camera->currentState&&cameraID==RE::CameraState::kThirdPerson?static_cast<RE::ThirdPersonState*>(camera->currentState.get()):nullptr;
             auto* pelvis=player->Get3D()->GetObjectByName("NPC Pelvis [Pelv]");
             const auto rendered=pelvis?pelvis->world.translate:pr;
-            Diagnostics::Motion("Ride visual camera={} mouseSteering={} freeYaw={} freeEnabled={} seatWrites={} pelvisBack=({},{},{}) wantState={}",
+            Diagnostics::Motion("Ride visual camera={} mouseSteering={} freeYaw={} freeEnabled={} seatWrites={} pelvisBack=({},{},{}) wantState={} waterDepth={}",
                 static_cast<unsigned>(cameraID),config.mouseSteering,third?third->freeRotation.x:0.f,third&&third->freeRotationEnabled,
-                Seat::TakeWrites(),rendered.x-b.x,rendered.y-b.y,rendered.z-b.z,static_cast<unsigned>(cc->wantState));
+                Seat::TakeWrites(),rendered.x-b.x,rendered.y-b.y,rendered.z-b.z,static_cast<unsigned>(cc->wantState),WaterRide::Offset());
+            Seat::LogOutput();Crawl::LogOutput();
+            const auto mountWorld=mount->Get3D()->world;
+            const auto playerWorld=player->Get3D()->world;
+            const auto backLocal=mountWorld.rotate.Transpose()*(b-mountWorld.translate)/mountWorld.scale;
+            const auto pelvisLocal=playerWorld.rotate.Transpose()*(rendered-playerWorld.translate)/playerWorld.scale;
+            Diagnostics::Motion("Ride model back=({},{},{}) pelvis=({},{},{}) rootScale=({},{}) saddle={}",
+                backLocal.x,backLocal.y,backLocal.z,pelvisLocal.x,pelvisLocal.y,pelvisLocal.z,mountWorld.scale,playerWorld.scale,
+                mount->Get3D()->GetObjectByName("SaddleBone")!=nullptr);
             rideLogTimer = 0.5f;
             Diagnostics::Flush(); // One batch per sample, not per motion-stage line.
             if(rideSamples==1200)Diagnostics::Trace("Ride sample limit reached ref={:08X}; next mount resets budget",mount->GetFormID());
@@ -589,7 +606,9 @@ void PlayerUpdate(RE::Actor* player, float delta)
     AuditMotionStage(player,"player-after");
     static bool reached = false;
     if (!reached) { spdlog::info("Player update hook reached"); reached = true; }
-    if(auto mount=ridden.get();mount&&!RE::UI::GetSingleton()->GameIsPaused()&&!player->IsDead()&&!mount->IsDead()&&RideReady(mount.get(),player))SyncMount(mount.get(),player);
+    if(auto mount=ridden.get();mount&&!RE::UI::GetSingleton()->GameIsPaused()&&!player->IsDead()&&!mount->IsDead()&&RideReady(mount.get(),player)){
+        WaterRide::Update(player,mount.get(),delta);SyncMount(mount.get(),player);
+    }
     Tick(player, delta);
 }
 void NPCUpdate(RE::Actor* actor, float delta)
@@ -884,6 +903,7 @@ void Save(SKSE::SerializationInterface* save)
         save->OpenRecord('RIDE',1);save->WriteRecordData(playerSpeedDelta);save->WriteRecordData(playerControllerFlags);
         save->WriteRecordData(static_cast<std::uint32_t>(downActive||upActive));save->WriteRecordData(downOriginalFlags);
     }
+    {auto mount=ridden.get();WaterRide::Save(save,mount.get());}
     Extras::Save(save);
     Wardrobe::Save(save);
     Travel::Save(save);
@@ -893,6 +913,7 @@ void Load(SKSE::SerializationInterface* save)
     Diagnostics::Trace("Serialization load begin");
     std::uint32_t type, version, length;
     while (save->GetNextRecordInfo(type, version, length)) {
+        if(WaterRide::Load(save,type,version,length))continue;
         if(Travel::Load(save,type,version,length))continue;
         if(Extras::Load(save,type,version,length))continue;
         if(Wardrobe::Load(save,type,version,length))continue;
@@ -925,8 +946,9 @@ void Load(SKSE::SerializationInterface* save)
         }
     }
 }
-void Revert(SKSE::SerializationInterface*) { RideDrive::End();Travel::Revert();Crawl::Clear();Wardrobe::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;transitionTime=0;playerSpeedDelta=0;jumpTimer=restoreRetry=0.f;rideMotion={};wasAir=false; }
+void Revert(SKSE::SerializationInterface*) { WaterRide::Reset();RideDrive::End();Travel::Revert();Crawl::Clear();Wardrobe::Clear();MovementCompat::End();Extras::Revert();Seat::Clear();targets.clear();ridden.reset();suppressedButtons.clear();dismountHold.Release();upActive=downActive=loadedRideState=false;transitionTime=0;playerSpeedDelta=0;jumpTimer=restoreRetry=0.f;rideMotion={};wasAir=false; }
 void MigrateKnownSpells(RE::PlayerCharacter* player){
+    WaterRide::Remove(player);
     auto* data=RE::TESDataHandler::GetSingleton();
     const std::array<std::pair<std::uint32_t,RE::SpellItem*>,2> migrations{{
         {0x80D,data->LookupForm<RE::SpellItem>(0x80C,plugin)},
@@ -950,8 +972,10 @@ void Message(SKSE::MessagingInterface::Message* message)
         MovementCompat::Initialize();
         if(!Seat::Install())spdlog::error("Seat/dismount animation data missing or invalid; mounting disabled");
         if(!Crawl::Install())spdlog::error("Crawl motion data missing or invalid; conversion disabled");
+        if(!PoseOutput::Install()){spdlog::error("Pose publication hook unavailable; NPCMounts gameplay hooks not installed");return;}
         mountFaction = data->LookupForm<RE::TESFaction>(0x800, plugin);
         riderFaction = data->LookupForm<RE::TESFaction>(0x801, plugin);
+        WaterRide::ability=data->LookupForm<RE::SpellItem>(0x825,plugin);
         convertEffect = data->LookupForm<RE::EffectSetting>(0x802, plugin);
         legacyConvertEffect = data->LookupForm<RE::EffectSetting>(0x822, plugin);
         restoreEffect = data->LookupForm<RE::EffectSetting>(0x803, plugin);
@@ -984,7 +1008,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESSpellCastEvent>(&events);
         RegisterRideInput();
         spdlog::info("Ready 0.4.4: equipment restore, capture, human anchor and transition poses");
-        spdlog::info("Runtime Y4.6 candidate: mount-relative entry and exact Phantom Horse rider motion with zero lateral bob; game validation pending");
+        spdlog::info("Runtime Y4.14 candidate: jump range 1-4; riding water-walk ability and one-third crawl-height immersion; game validation pending");
         spdlog::info("Build compiled {} {}: game validation pending",__DATE__,__TIME__);
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
@@ -1004,6 +1028,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         std::vector<RE::FormID> ids;
         for (const auto& [id, state] : targets) ids.push_back(id);
         for (auto id : ids) if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(id)) {
+            WaterRide::Recover(actor);WaterRide::Remove(actor);
             if(!actor->Get3D()||!actor->GetParentCell()||!actor->GetParentCell()->IsAttached())continue;
             if (targets.at(id).restoreRequested) { Restore(actor); continue; }
             if(actor->IsDead())continue;

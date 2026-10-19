@@ -1,0 +1,19 @@
+Y4.12：错误的生成钩子入口，2026-10-20
+
+1. Y4.11运行日志20261020-004425-717-5224-9786468，共552350字节，15次游泳采样12次座位写入为0，全部拒绝计数为0。kForceAnimGraphUpdate尝试无效，已撤销本轮新增的玩家/NPC前置标志操作；不再把“matched=0”直接等同于角色图停止更新或子管理器问题。
+
+2. 当前1.5.97 EXE和Address Library确认VTABLE_hkbBehaviorGraph[0x17]实际指向RVA 9F05C0。函数仅执行：读取R8指向的首个子输出、与R9目标比较、不相同时跳转A10AD0复制输出。它并非顶层行为评估入口。tools/inspect-pose-entry.cjs可重新读取现场EXE反汇编。
+
+3. 活跃profile中唯一提供0_Master.hkx的目录为Pandora Output（modlist第92行），overwrite没有同名文件；SHA256=6BE1C005478C031BD97698314D34E4F7425A373E020A46B29573D05295EC2F92。只读转换XML显示陆地MT/Sprint使用hkbBehaviorReferenceGenerator，SwimBehavior直接是主图内部hkbStateMachine，再到游泳clip。因而陆地引用图触发旧虚函数，水中主图内部状态不经过旧虚函数。这与实机水中matched=0、无拒绝完全一致。
+
+4. Havok hkbBehaviorGraph具有不同的公开顶层generate重载与虚拟子图generate重载。公开源码说明参考：https://github.com/Bewolf2/projectanarchy/blob/master/Source/Behavior/Behavior/BehaviorGraph/hkbBehaviorGraph.h 。本机顶层入口9F1230在AEC6A7、9FDAB7、9FE320等同步/异步路径被直接调用；AEC684开始的实际指令确认RCX=behaviorGraph、RDX=context、R8=generatorOutputs[0]、R9B=false、栈float=0和update bool。实际顶层函数在9F1454完成节点遍历，并在9F1497执行最终整理。
+
+5. 新PoseOutput.h使用真实MinHook挂顶层9F1230，在原函数完成后运行Crawl与Seat的严格输出校验/替换。两个资源Install不再写0x17虚表。保留原函数全部6参数及返回后的原生发布流程；只处理setCharacterPose=false的角色输出，内部已复制姿态的评估透传。安装按当前版本15字节入口验证，失败时不安装本Mod游戏交互钩子。没有subManagers访问，没有新增碰撞钩子，没有强制游泳物理状态。
+
+6. X错位的源码依据：原座位使用固定X或上一帧已发布场景X，NPC使用当前采样姿态；旧输出阶段还会被主图后续混合覆盖。改为Crawl::Anchor读取同一ActorPose的Spine2模型X，再由Seat按两者根旋转/缩放换算；Y/Z保留稳定锚点和既有Phantom起伏，不修改NPC COM/步态/动作相位，不引入第三方兼容。
+
+7. 验证：tests/verify-pose-entry.cjs核验现场EXE入口、调用参数及最终整理指令；tests/pose-root.cpp运行生产Install/GenerateRoot，使用真实MinHook、实际入口prologue、独立native替身验证六参数（含栈float/bool）、无子图调用的发布、原生物理字段保持及内部评估透传。既有生产姿态函数测试使用实际动作库；新增Anchor只读、与当前PosePoint一致，验证静止/七类步态。上述为离线/ABI验证，不等于游戏视觉验证。
+
+证据、原源码、现场日志和部署备份目录：reports/Y4.12-engine-path-20261020。保留Y4.11备份；未提交推送。
+
+实际部署：一轮完整自检退出码0，Release编译和整包验证通过；667文件仅DLL改变，其余666文件哈希保持。DLL SHA256=B9BBC70DF820C4178AB55CA54D3B40965A462BFF756C3999C71E8658BFF7A1C4。MO2正常关闭请求超时，未强杀；游戏未运行，本轮仅替换未加载DLL且不改目录/profile；modlist哈希保持。

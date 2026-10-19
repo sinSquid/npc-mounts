@@ -2,7 +2,7 @@
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const root=path.resolve(__dirname,'..'),s=fs.readFileSync(path.join(root,'src/Crawl.cpp'),'utf8');
 function take(sig){let start=s.indexOf(sig);assert(start>=0,sig);let end=s.indexOf('{',start)+1,n=1;while(n){const c=s[end++];if(c==='{')n++;if(c==='}')n--;}return s.slice(start,end);}
-const globals=s.slice(s.indexOf('constexpr unsigned bones'),s.indexOf('using Generate='));
+const globals=s.slice(s.indexOf('constexpr unsigned bones'),s.indexOf('void Reindex('));
 fs.writeFileSync(path.join(root,'build/crawl-regression.cpp'),`
 #include <array>
 #include <vector>
@@ -22,6 +22,7 @@ fs.writeFileSync(path.join(root,'build/crawl-regression.cpp'),`
 #include <cctype>
 #include <limits>
 #include "../src/PosePoint.h"
+#include "../src/PoseAudit.h"
 namespace RE{
 struct NiPoint3{float x,y,z;};
 using FormID=unsigned;template<class T>using BSTSmartPointer=std::shared_ptr<T>;struct NiAVObject{};
@@ -35,6 +36,7 @@ using Generate=decltype(&nativeOriginal);Generate original{};int hookWrites=0;
 namespace RE{constexpr std::uintptr_t VTABLE_hkbBehaviorGraph[]{1};}
 namespace REL{template<class T>struct Relocation{Relocation(T){}template<class F>std::uintptr_t write_vfunc(int slot,F){assert(slot==0x17);++hookWrites;return reinterpret_cast<std::uintptr_t>(&nativeOriginal);}};}
 bool Bind(RE::Actor*,bool publish=true);
+${take('void Reindex(')}
 ${['void Blend(','void Sample(','std::string_view Canonical(','std::string OverlayName(','bool OverlayBone(','void GeneratePose(','bool Available(','bool Install(','std::vector<GraphStamp> Snapshot(','bool Matches(','bool BindMode(','bool Bind(','bool BindBound(','bool Resume(','void Update(','void UpdateBound(','bool Anchor(','bool Working(','void Remove(','void Clear('].map(take).join('\n')}
 int main(int argc,char** argv){assert(argc==2||argc==3);
  if(argc==3){assert(!Install(argv[2])&&!Available()&&hookWrites==0);std::puts("PASS: original failing J bank rejected by production Install.");}
@@ -53,7 +55,7 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
   assert(!Install("build/crawl-invalid-test.nmc"));assert(!Available()&&hookWrites==0);
  }
  assert(!Install("build/nonexistent-crawl-test.nmc")&&!Available()&&hookWrites==0);
- assert(Install(argv[1])&&Available()&&hookWrites==1);
+ assert(Install(argv[1])&&Available()&&hookWrites==0);
  std::puts("PASS: production Install rejects missing/truncated/header/trailing/parent/negative/zero/NaN data before hook, accepts candidate bank.");
  for(auto& c:clips){Frame a,b;Sample(c,c.duration*.2f,a);Sample(c,c.duration*.7f,b);assert(memcmp(&a,&b,sizeof(Frame))!=0);for(const auto& p:a){float norm=0;for(float v:p.q){assert(std::isfinite(v));norm+=v*v;}assert(std::abs(norm-1)<.0001f);}}
  for(unsigned count:{99u,126u}){
@@ -67,12 +69,13 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
  Update(&a,0,0);assert(actors.at(1).time==0);Update(&a,1,0);assert(actors.at(1).time==0);Update(&a,4,0);assert(actors.at(1).time==0);
  RE::NiPoint3 anchor;assert(Anchor(&a,anchor,0));unsigned spine=0;for(unsigned i=0;i<bones;++i)if(std::string_view(names[i].data())=="NPC Spine2 [Spn2]")spine=i;
  auto rest=PosePoint(clips[0].frames.front(),parents,spine);
- assert(std::abs(anchor.x)<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
+ assert(std::abs(anchor.x-PosePoint(actors.at(1).pose,parents,spine)[0])<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
  for(int gait=0;gait<7;++gait){
   actors.at(1).gait=gait;actors.at(1).time=clips[gait].duration*.25f;assert(Anchor(&a,anchor,1));
-  assert(std::abs(anchor.x)<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
+  assert(std::abs(anchor.x-PosePoint(actors.at(1).pose,parents,spine)[0])<1e-5&&std::abs(anchor.y-rest[1])<1e-5&&std::abs(anchor.z-rest[2])<1e-5);
   actors.at(1).time=clips[gait].duration*.75f;assert(Anchor(&a,anchor,.5f));assert(std::abs(anchor.z-rest[2])<1e-5);
  }
+ for(int gait=0;gait<7;++gait)for(int step=0;step<30;++step){Update(&a,gait,1.f/60);const auto before=actors.at(1).pose;const auto expected=PosePoint(before,parents,spine);assert(Anchor(&a,anchor,1));assert(std::abs(anchor.x-expected[0])<1e-5f);assert(std::memcmp(before.data(),actors.at(1).pose.data(),sizeof(Frame))==0);}
  const unsigned header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes,std::byte{0x33});auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};auto before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);assert(memcmp(b.data()+64+sizeof(Frame),before.data()+64+sizeof(Frame),(count-99)*sizeof(Pose))==0);
  assert(Bind(&a,false));before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(b==before&&!actors.at(1).publish);
  Resume(&a);assert(actors.at(1).publish);GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);
@@ -82,5 +85,5 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
   for(unsigned i=0;i<bones;++i)if(OverlayBone(names[i].data())){sk->bones.push_back({names[i].data()});sk->parentIndices.push_back(sk->parentIndices.empty()?-1:0);}
   assert(sk->bones.size()>=15&&sk->bones.size()<99);assert(BindBound(&giant));UpdateBound(&giant,.016f);assert(actors.at(2).bound&&actors.at(2).gait==int(boundClip));
   const unsigned count=static_cast<unsigned>(sk->bones.size()),header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes);auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};GeneratePose(nullptr,ctx,nullptr,out,0);assert(actors.at(2).wrote);Remove(2);}
- Clear();assert(actors.empty()&&retries.empty());std::puts("PASS: real 8-clip bank; stable centreline anchor without duplicate rider bob, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}
+ Clear();assert(actors.empty()&&retries.empty()&&graphOwners.empty());std::puts("PASS: real 8-clip bank; cached centreline anchor, graph owner lifecycle, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}
 `);

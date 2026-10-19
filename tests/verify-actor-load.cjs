@@ -23,6 +23,7 @@ namespace Crawl{void Bind(RE::Actor*){}}
 namespace SKSE {struct Tasks{std::vector<std::function<void()>>queue;void AddTask(std::function<void()> fn){queue.push_back(fn);}void Run(){auto pending=std::move(queue);queue.clear();for(auto& fn:pending)fn();}};Tasks tasks;Tasks* GetTaskInterface(){return &tasks;}}
 struct State{bool restoreRequested=false;int animation=3;bool posePending=false;};std::unordered_map<unsigned,State>targets{{1,{}}};int mountFaction=0,restores=0;
 void Restore(RE::Actor*){++restores;targets.erase(1);}void HoldPose(RE::Actor* a){++a->mutations;}void StopMotion(RE::Actor* a){++a->mutations;}
+bool Riding(RE::Actor*){return false;}
 ${source.slice(resetStart,resetEnd)}
 void RetryPose(){auto* actor=&RE::actor;auto& state=targets.at(1);const unsigned id=1;
 ${source.slice(retryStart,retryEnd)}

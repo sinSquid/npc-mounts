@@ -2,10 +2,10 @@ const fs=require('fs'),path=require('path'),assert=require('assert'),z=require('
 const repo=path.resolve(__dirname,'..'),dist=process.argv[2]?path.resolve(process.argv[2]):path.join(repo,'dist'),records=[];
 function parse(b,start=0,end=b.length){for(let p=start;p<end;){const type=b.toString('ascii',p,p+4),n=b.readUInt32LE(p+4);if(type==='GRUP'){parse(b,p+24,p+n);p+=n;continue;}let data=b.subarray(p+24,p+24+n);if(b.readUInt32LE(p+8)&0x40000)data=z.inflateSync(data.subarray(4));const fields=[];for(let q=0;q<data.length;){const tag=data.toString('ascii',q,q+4),len=data.readUInt16LE(q+4);fields.push({tag,data:data.subarray(q+6,q+6+len)});q+=6+len;assert(q<=data.length);}records.push({type,id:b.readUInt32LE(p+12),flags:b.readUInt32LE(p+8),fields});p+=24+n;assert(p<=end);}}
 parse(fs.readFileSync(path.join(dist,'NPCMounts.esp')));
-assert.equal(records.length,26);assert(records[0].flags&0x200);
+assert.equal(records.length,27);assert(records[0].flags&0x200);
 const names=['人魅-人形坐骑化','人魅-解除坐骑化与束缚','人魅-固定NPC','人魅-捕获','人魅-牵引坐骑','人魅-解除牵引（旧版兼容）','人魅-人形坐骑化（旧版兼容）'];
 for(const type of ['SPEL','MGEF','BOOK']){
- const fulls=records.filter(r=>r.type===type).map(r=>r.fields.find(f=>f.tag==='FULL').data.toString('utf8').replace(/\0/g,'').replace(/^法术书：/,''));
+ const fulls=records.filter(r=>r.type===type&&r.id!==0x01000825).map(r=>r.fields.find(f=>f.tag==='FULL').data.toString('utf8').replace(/\0/g,'').replace(/^法术书：/,''));
  const expected=[...names];if(type==='BOOK'){expected[5]='人魅-牵引坐骑（旧版兼容书）';expected[6]='人魅-人形坐骑化（旧版兼容书）';}assert.deepEqual(fulls,expected);
 }
 for(const r of records)for(const f of r.fields)if(['FULL','DESC','DNAM','SNAM'].includes(f.tag)&&r.type!=='STAT')
@@ -19,7 +19,10 @@ for(const r of records.filter(r=>r.type==='MGEF')){
  assert.equal(data.length,152);assert.equal(data.readUInt32LE(64),1);assert(!(data.readUInt32LE(0)&5));
  assert.equal(data.readUInt32LE(80),1);assert.equal(data.readUInt32LE(84),[0x01000803,0x01000807].includes(r.id)?0:2);
 }
-for(const r of records.filter(r=>r.type==='SPEL')){
+const water=records.find(r=>r.type==='SPEL'&&r.id===0x01000825);assert(water);
+assert.equal(water.fields.find(f=>f.tag==='EFID').data.readUInt32LE(),0x8cac9);
+const waterData=water.fields.find(f=>f.tag==='SPIT').data;assert.equal(waterData.readUInt32LE(8),4);assert.equal(waterData.readUInt32LE(16),0);assert.equal(waterData.readUInt32LE(20),0);
+for(const r of records.filter(r=>r.type==='SPEL'&&r.id!==0x01000825)){
  const ref=r.fields.find(x=>x.tag==='EFID').data.readUInt32LE();assert(records.some(v=>v.id===ref&&v.type==='MGEF'));
  assert.equal(r.fields.find(x=>x.tag==='SPIT').data.length,36);
 }
@@ -61,5 +64,5 @@ for(let i=0;i<7;i++){const book=books.find(b=>b.id===0x01000000+[0x810,0x811,0x8
 assert(implementation.includes('MigrateKnownSpells(player)'));
 assert.equal((implementation.match(/player->AddSpell\(/g)||[]).length,1); // Only conditional old-spell migration, no automatic learning.
 assert(fs.existsSync(path.join(dist,'meshes/NPCMounts/restraintpost_static.nif')));
-const report={pluginRecords:25,currentSpells:5,spellTomes:7,legacyTomes:2,retiredBooks:0,onlyMaster:'Skyrim.esm',noNPCOrRaceOverrides:true,validatedUniqueClips:18,animationAliases:hkx,phantomRiderFrames:13,scopedRiderLayer:true,gameTested:false};
+const report={pluginRecords:26,currentSpells:5,internalAbilities:1,spellTomes:7,legacyTomes:2,retiredBooks:0,onlyMaster:'Skyrim.esm',noNPCOrRaceOverrides:true,validatedUniqueClips:18,animationAliases:hkx,phantomRiderFrames:13,scopedRiderLayer:true,gameTested:false};
 fs.writeFileSync(path.join(repo,'reports/package-verification.json'),JSON.stringify(report,null,2));console.log(report);
