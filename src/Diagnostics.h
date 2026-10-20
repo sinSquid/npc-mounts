@@ -47,6 +47,7 @@ inline void SetLevel(int level){
         nullLogger->set_level(spdlog::level::off);spdlog::set_default_logger(nullLogger);return;
     }
     if(!fileLogger&&!logDirectory.empty()){
+        try {
         SYSTEMTIME time{};GetLocalTime(&time);
         const auto run=fmt::format("{:04}{:02}{:02}-{:02}{:02}{:02}-{:03}-{}-{}",time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds,GetCurrentProcessId(),GetTickCount64());
         const auto archive=logDirectory/"NPCMounts-runs";
@@ -58,6 +59,11 @@ inline void SetLevel(int level){
         fileLogger->flush_on(spdlog::level::info);
         fileLogger->set_level(SpdLevel(level));spdlog::set_default_logger(fileLogger);
         fileLogger->info("op=0 ref=00000000 Session={} archive={} build={} {}",run,path.string(),__DATE__,__TIME__);return;
+        } catch(const spdlog::spdlog_ex&) {
+            fileLogger.reset();
+            if(!nullLogger)nullLogger=std::make_shared<spdlog::logger>("NPCMounts-off",std::make_shared<spdlog::sinks::null_sink_mt>());
+            nullLogger->set_level(spdlog::level::off);spdlog::set_default_logger(nullLogger);return;
+        }
     }
     if(fileLogger){fileLogger->set_level(SpdLevel(level));spdlog::set_default_logger(fileLogger);}
 }
@@ -70,6 +76,7 @@ inline void Initialize(const std::filesystem::path& directory,int level){
     SetLevel(level);
 }
 inline void Snapshot(RE::Actor* actor,const char* event){
+    if(!spdlog::default_logger()->should_log(spdlog::level::info))return;
     if(!actor){Trace("{} target=null",event);return;}
     const auto* base=actor->GetActorBase();const auto* race=actor->GetRace();const auto* cell=actor->GetParentCell();
     const auto* name=actor->GetName();

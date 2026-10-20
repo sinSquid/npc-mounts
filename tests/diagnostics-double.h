@@ -17,6 +17,7 @@ template<class... T>void Begin(T...){}
 template<class... T>void End(T...){}
 template<class... T>void Remove(T...){}
 template<class... T>void Recover(T...){}
+template<class... T>void Forget(T...){}
 template<class... T>void Update(T...){}
 template<class... T>void Save(T...){}
 template<class... T>bool Load(T...){return false;}

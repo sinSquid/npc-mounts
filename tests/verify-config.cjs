@@ -1,7 +1,7 @@
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const repo=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(repo,'src/Config.cpp'),'utf8');
 function extract(sig){const start=source.indexOf(sig);assert(start>=0);let end=source.indexOf('{',start)+1,depth=1;while(depth){const c=source[end++];if(c==='{')depth++;if(c==='}')depth--;}return source.slice(start,end);}
-assert.match(extract('bool Write('), /out\.close\(\);\s*return out\.good\(\)/, 'Save must include close errors in its result');
+assert.match(extract('bool Write('), /out\.close\(\);[\s\S]*out\.good\(\)&&MoveFileExW/, 'Only replace the original after a successful close');
 fs.writeFileSync(path.join(repo,'build/config-regression.cpp'),`
 #include "../src/Config.h"
 #include "../src/RideControl.h"
@@ -11,6 +11,8 @@ fs.writeFileSync(path.join(repo,'build/config-regression.cpp'),`
 #include <limits>
 #include <iomanip>
 #include <cstdio>
+#define NOMINMAX
+#include <Windows.h>
 namespace Settings {${extract('Data Read(')} ${extract('bool Write(')}}
 int main(){
  HoldGate hold;hold.Press();assert(!hold.Tick(.25f,.25f));assert(hold.Tick(.001f,.25f));assert(!hold.Tick(1,.25f));
@@ -26,6 +28,14 @@ int main(){
  for(auto f:Settings::floats)assert(cfg.*f.member==loaded.*f.member);
  for(auto f:Settings::bools)assert(cfg.*f.member==loaded.*f.member);
  assert(loaded.dismountKey==18&&loaded.logLevel==4);
+ const auto readText=[](const char* path){std::ifstream in(path,std::ios::binary);return std::string(std::istreambuf_iterator<char>(in),{});};
+ const auto originalText=readText("build/config-roundtrip.ini");
+ assert(SetFileAttributesW(L"build/config-roundtrip.ini",FILE_ATTRIBUTE_READONLY));
+ auto changed=cfg;changed.npcScale=2.5f;assert(!Settings::Write("build/config-roundtrip.ini",changed));
+ assert(Settings::Read("build/config-roundtrip.ini").npcScale==cfg.npcScale);
+ assert(readText("build/config-roundtrip.ini")==originalText);
+ assert(!std::filesystem::exists("build/config-roundtrip.ini.tmp"));
+ assert(SetFileAttributesW(L"build/config-roundtrip.ini",FILE_ATTRIBUTE_NORMAL));
  bool success=true;Settings::Read("build/no-such-config-file.ini",&success);assert(!success);
  {std::ofstream f("build/config-bom.ini",std::ios::binary);f<<"\\xEF\\xBB\\xBF"<<"NPCScale=2.5\\nSpeedMultiplier=1.5\\n";}
  loaded=Settings::Read("build/config-bom.ini",&success);assert(success&&loaded.npcScale==2.5f&&loaded.speedMultiplier==1.5f);

@@ -14,6 +14,8 @@ int main(){
  const auto root=std::filesystem::temp_directory_path()/fmt::format("NPCMounts-diagnostic-test-{}-{}",GetCurrentProcessId(),GetTickCount64());
  const auto off=root/"off";std::filesystem::create_directories(off);Initialize(off,0);Trace("must-not-exist");spdlog::error("must-not-exist");Flush();
  assert(!std::filesystem::exists(off/"NPCMounts.log")&&!std::filesystem::exists(off/"NPCMounts-runs"));
+ // Disabled snapshots must not dereference an actor or query the game.
+ Snapshot(reinterpret_cast<RE::Actor*>(std::uintptr_t(1)),"disabled");
  const auto dir=root/"enabled";std::filesystem::create_directories(dir);Initialize(dir,4);
  Context parent{};
  {Scope op(0x123);parent=current;Trace("operation-before");{Scope nested(0x456);assert(current.operation!=parent.operation);}assert(current.operation==parent.operation);}
@@ -29,5 +31,8 @@ int main(){
  SetLevel(3);Trace("info-after-enable");Motion("debug-must-not-exist");Flush();const auto info=Read(dir/"NPCMounts.log");assert(info.find("info-after-enable")!=std::string::npos&&info.find("debug-must-not-exist")==std::string::npos);
  SetLevel(1);spdlog::warn("warn-must-not-exist-level1");spdlog::error("error-level1");Flush();const auto errorOnly=Read(dir/"NPCMounts.log");assert(errorOnly.find("error-level1")!=std::string::npos&&errorOnly.find("warn-must-not-exist-level1")==std::string::npos);
  SetLevel(2);Trace("info-must-not-exist-level2");spdlog::warn("warn-level2");Flush();const auto warning=Read(dir/"NPCMounts.log");assert(warning.find("warn-level2")!=std::string::npos&&warning.find("info-must-not-exist-level2")==std::string::npos);
+ const auto blocked=root/"not-a-directory";{std::ofstream file(blocked);file<<"keep";}
+ Initialize(blocked,4);Trace("cannot-open");Flush();assert(!fileLogger&&Read(blocked)=="keep");
+ assert(!spdlog::default_logger()->should_log(spdlog::level::info));
  std::printf("PASS: level 0 creates/touches no logs; levels reconfigure at runtime; sessions, filtering, operation context and bounded sampling verified. Evidence: %s. Not game QA.\n",root.string().c_str());
 }

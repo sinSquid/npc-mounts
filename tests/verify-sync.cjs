@@ -29,11 +29,12 @@ struct Flags {
 struct Controller {Flags flags;NiPoint3 position;float fallTime{};void SetLinearVelocityImpl(hkVector4){};};
 struct Cell{bool attached=true;bool IsAttached(){return attached;}};inline Cell cell;
 struct Actor {
- NiPoint3 position;Controller controller;float angle{};unsigned writes{};
+ NiPoint3 position,tilt;Controller controller;float angle{};unsigned writes{},angleWrites{};
  Cell* parent=&cell;bool loaded=true;void* world=nullptr;void* GetWorldspace(){return world;}auto* GetParentCell(){return parent;}void* Get3D(){return loaded?this:nullptr;}
  auto* GetCharController(){return &controller;}
  auto GetPosition(){return position;}auto GetAngleZ(){return angle;}
- void SetAngle(NiPoint3 value){angle=value.z;}
+ NiPoint3 GetAngle(){return {tilt.x,tilt.y,angle};}
+ void SetAngle(NiPoint3 value){angle=value.z;tilt=value;++angleWrites;}
  void SetPosition(NiPoint3 value,bool update){position=value;++writes;if(update)controller.position=value;}
  void EngineUpdate(){position=controller.position;}
 };
@@ -61,7 +62,9 @@ int main(){
    assert(!(mount.controller.flags.value&(1u<<17)));
    assert(mount.controller.flags.value&(1u<<27));assert(mount.controller.flags.value&(1u<<21));
  }
- auto writes=mount.writes;for(int i=0;i<100;++i)SyncMount(&mount,&player);assert(mount.writes==writes);
+ auto writes=mount.writes,angleWrites=mount.angleWrites;for(int i=0;i<100;++i)SyncMount(&mount,&player);assert(mount.writes==writes&&mount.angleWrites==angleWrites);
+ mount.tilt.x=.2f;SyncMount(&mount,&player);assert(mount.tilt.x==0&&mount.angleWrites==angleWrites+1);
+ config.headingDegrees=15;SyncMount(&mount,&player);assert(std::abs(mount.angle-player.angle-15*std::numbers::pi_v<float>/180)<.00001f);config.headingDegrees=0;
  // Mount entry must repair an old stale proxy even if the reference already matches.
  mount.controller.position={-1000,0,0};SyncMount(&mount,&player,true);mount.EngineUpdate();assert(mount.position==player.position);
  RestoreController(&mount,owned,saved);

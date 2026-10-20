@@ -160,7 +160,8 @@ void SyncMount(RE::Actor* mount, RE::Actor* player, bool force = false)
     if (force || mount->GetPosition() != position) mount->SetPosition(position, true);
     // Use the reference rotation API instead of relying only on a heading change
     // while the actor's autonomous movement is blocked.
-    mount->SetAngle(RE::NiPoint3{0.f, 0.f, player->GetAngleZ()+config.headingDegrees*std::numbers::pi_v<float>/180.f});
+    const RE::NiPoint3 angle{0.f,0.f,player->GetAngleZ()+config.headingDegrees*std::numbers::pi_v<float>/180.f};
+    if(force||mount->GetAngle()!=angle)mount->SetAngle(angle);
 }
 void RestoreController(RE::Actor* actor, RE::CHARACTER_FLAGS mask, std::uint32_t flags)
 {
@@ -883,7 +884,7 @@ struct Events final : RE::BSTEventSink<RE::TESMagicEffectApplyEvent>, RE::BSTEve
     }
     RE::BSEventNotifyControl ProcessEvent(const RE::TESFormDeleteEvent* event, RE::BSTEventSource<RE::TESFormDeleteEvent>*) override
     {
-        if (event) {Travel::Forget(event->formID);Crawl::Remove(event->formID);Wardrobe::Forget(event->formID);targets.erase(event->formID);Extras::Deleted(event->formID);}
+        if (event) {WaterRide::Forget(event->formID);Travel::Forget(event->formID);Crawl::Remove(event->formID);Wardrobe::Forget(event->formID);targets.erase(event->formID);Extras::Deleted(event->formID);}
         return RE::BSEventNotifyControl::kContinue;
     }
 } events;
@@ -1008,7 +1009,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESSpellCastEvent>(&events);
         RegisterRideInput();
         spdlog::info("Ready 0.4.4: equipment restore, capture, human anchor and transition poses");
-        spdlog::info("Runtime Y4.14 candidate: jump range 1-4; riding water-walk ability and one-third crawl-height immersion; game validation pending");
+        spdlog::info("Runtime Y4.16 candidate: water recovery ledger, equipment snapshot lifetime and transactional INI saving; game validation pending");
         spdlog::info("Build compiled {} {}: game validation pending",__DATE__,__TIME__);
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {

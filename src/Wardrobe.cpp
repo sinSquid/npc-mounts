@@ -52,9 +52,10 @@ void Capture(RE::Actor* actor,bool clothing){
     }
     // Unequip only: no AddItem/RemoveItem/container transfer or base outfit mutation.
     for(const auto& [armor,instance]:worn){
+        Item saved{armor->GetFormID()};if(instance)if(auto* id=instance->GetByType<RE::ExtraUniqueID>())saved.unique=id->uniqueID;
         const bool accepted=equip->UnequipObject(actor,armor,instance,1,nullptr,false,false,false,true);
         Diagnostics::Trace("Unequip request target={:08X} item={:08X} accepted={}",actor->GetFormID(),armor->GetFormID(),accepted);
-        if(accepted){Item saved{armor->GetFormID()};if(instance)if(auto* id=instance->GetByType<RE::ExtraUniqueID>())saved.unique=id->uniqueID;snapshot.clothing.push_back(saved);}
+        if(accepted)snapshot.clothing.push_back(saved);
     }
     if(!worn.empty()&&spdlog::default_logger()->should_log(spdlog::level::info)){
         const auto after=actor->GetInventory();
@@ -70,8 +71,8 @@ void Capture(RE::Actor* actor,bool clothing){
     std::scoped_lock lock(mutex);snapshots.insert_or_assign(actor->GetFormID(),std::move(snapshot));
 }
 void Restore(RE::Actor* actor){
-    Snapshot saved;{std::scoped_lock lock(mutex);auto it=snapshots.find(actor->GetFormID());if(it==snapshots.end())return;saved=std::move(it->second);snapshots.erase(it);}
     auto* equip=RE::ActorEquipManager::GetSingleton();if(!equip)return;
+    Snapshot saved;{std::scoped_lock lock(mutex);auto it=snapshots.find(actor->GetFormID());if(it==snapshots.end())return;saved=std::move(it->second);snapshots.erase(it);}
     const auto inventory=saved.clothing.empty()?Inventory{}:actor->GetInventory();
     for(const auto& item:saved.clothing)if(auto* armor=RE::TESForm::LookupByID<RE::TESObjectARMO>(item.form))equip->EquipObject(actor,armor,Instance(inventory,item),1,nullptr,false,false,false,true);
     const auto equipHand=[&](RE::FormID id,bool left){

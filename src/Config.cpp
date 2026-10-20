@@ -37,7 +37,8 @@ Data Read(const std::filesystem::path& path, bool* success) {
 }
 bool Write(const std::filesystem::path& path, Data value) {
     Normalize(value);
-    std::ofstream out(path, std::ios::trunc);
+    auto temporary=path;temporary+=L".tmp";
+    std::ofstream out(temporary, std::ios::trunc);
     if (!out) return false;
     out.imbue(std::locale::classic());
     out << std::setprecision(std::numeric_limits<float>::max_digits10);
@@ -51,7 +52,9 @@ bool Write(const std::filesystem::path& path, Data value) {
     out << "; 0 = current Activate binding; other values = keyboard scan code (decimal)\nDismountKey=" << value.dismountKey << '\n';
     out.flush();
     out.close();
-    return out.good();
+    const bool saved=out.good()&&MoveFileExW(temporary.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH);
+    if(!saved){std::error_code error;std::filesystem::remove(temporary,error);}
+    return saved;
 }
 Data Get() { std::scoped_lock lock(mutex); return current; }
 void Set(Data value) { Normalize(value); std::scoped_lock lock(mutex); current=value; }
