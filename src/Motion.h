@@ -39,4 +39,26 @@ struct RideState {
         return animation;
     }
 };
+
+// Direct movers can change an unridden reference without controller velocity.
+// Sample net horizontal motion; do not infer movement from water state alone.
+struct ObservedMovement {
+    float x=0.f,y=0.f,time=0.f,speed=0.f;
+    unsigned cell=0;
+    bool ready=false;
+    RideState gait;
+    void Reset(){*this={};}
+    int Update(float px,float py,unsigned space,float delta,float run,float sprint){
+        if(!ready||cell!=space||delta<=0.f||delta>.25f||std::hypot(px-x,py-y)>512.f){
+            Reset();x=px;y=py;cell=space;ready=true;return 0;
+        }
+        time+=delta;
+        if(time>=.1f){
+            const float distance=std::hypot(px-x,py-y);
+            speed=distance>=1.f?distance/time:0.f;
+            x=px;y=py;time=0.f;
+        }
+        return gait.Update(speed,0.f,speed>0.f?1.f:0.f,0.f,false,false,delta,run,sprint);
+    }
+};
 }

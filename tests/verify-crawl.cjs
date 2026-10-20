@@ -1,6 +1,6 @@
 // Execute production sampling, binding and output against the actual packaged motion bank.
 const fs=require('fs'),path=require('path'),assert=require('assert');
-const root=path.resolve(__dirname,'..'),s=fs.readFileSync(path.join(root,'src/Crawl.cpp'),'utf8');
+const root=path.resolve(__dirname,'..'),s=fs.readFileSync(process.argv[2]||path.join(root,'src/Crawl.cpp'),'utf8');
 function take(sig){let start=s.indexOf(sig);assert(start>=0,sig);let end=s.indexOf('{',start)+1,n=1;while(n){const c=s[end++];if(c==='{')n++;if(c==='}')n--;}return s.slice(start,end);}
 const globals=s.slice(s.indexOf('constexpr unsigned bones'),s.indexOf('void Reindex('));
 fs.writeFileSync(path.join(root,'build/crawl-regression.cpp'),`
@@ -77,6 +77,20 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
  }
  for(int gait=0;gait<7;++gait)for(int step=0;step<30;++step){Update(&a,gait,1.f/60);const auto before=actors.at(1).pose;const auto expected=PosePoint(before,parents,spine);assert(Anchor(&a,anchor,1));assert(std::abs(anchor.x-expected[0])<1e-5f);assert(std::memcmp(before.data(),actors.at(1).pose.data(),sizeof(Frame))==0);}
  const unsigned header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes,std::byte{0x33});auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};auto before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);assert(memcmp(b.data()+64+sizeof(Frame),before.data()+64+sizeof(Frame),(count-99)*sizeof(Pose))==0);
+ // Graph replacement must not repeatedly restart idle/time while gait stays moving.
+ // Exercise sampling AND the generated output, not only the faction/desired gait.
+ Update(&a,2,.1f);unsigned changed=0;
+ for(int frame=0;frame<90;++frame){
+  const float previousTime=actors.at(1).time;
+  auto replacement=std::make_shared<RE::BShkbAnimationGraph>();replacement->characterInstance.setup=g->characterInstance.setup;
+  a.manager->graphs[0]=replacement;g=replacement;ctx.character=&g->characterInstance;
+  Update(&a,2,1.f/60);
+  assert(std::abs(actors.at(1).time-std::fmod(previousTime+1.f/60,clips[2].duration))<.00001f);
+  before=b;GeneratePose(nullptr,ctx,nullptr,out,0);
+  assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);
+  if(memcmp(b.data()+64,before.data()+64,sizeof(Frame))!=0)++changed;
+ }
+ assert(changed==90);
  assert(Bind(&a,false));before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(b==before&&!actors.at(1).publish);
  Resume(&a);assert(actors.at(1).publish);GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);
  for(int bad=0;bad<5;bad++){h={short(count),short(count),64,48,1,0,1,0};if(bad==0)h.numData=98;if(bad==1)h.flags=1;if(bad==2)h.elementSizeBytes=32;if(bad==3)h.dataOffset=63;if(bad==4)h.type=0;before=b;Update(&a,2,.1f);GeneratePose(nullptr,ctx,nullptr,out,0);assert(b==before);}

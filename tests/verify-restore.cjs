@@ -19,6 +19,7 @@ const code=`
 #include <vector>
 #include <cmath>
 #include "../src/Config.h"
+#include "../src/Motion.h"
 namespace RE {
 using FormID=std::uint32_t;
 enum class ACTOR_LIFE_STATE : std::uint32_t { kAlive=0,kDead=2,kRestrained=6 };

@@ -52,7 +52,8 @@ bool Riding(RE::Actor* a){return a==rideActor;}void AuditMotionStage(RE::Actor*,
 bool RideReady(RE::Actor*,RE::Actor*){return true;}void SyncMount(RE::Actor*,RE::Actor*){}
 struct State{bool posePending=false,restoreRequested=false;};std::unordered_map<unsigned,State>targets;void* mountFaction=nullptr;
 bool Converted(RE::Actor* a){return targets.contains(a->id);}bool ActorReady(RE::Actor* a){return a->loaded;}
-namespace Crawl{int resumes=0;bool released=false;bool Resume(RE::Actor*){if(released)return false;released=true;++resumes;return true;}}
+struct{int logLevel=0;}config;
+namespace Crawl{int resumes=0,inspected=0;bool released=false;void Inspect(RE::Actor*){++inspected;} bool Resume(RE::Actor*){if(released)return false;released=true;++resumes;return true;}}
 namespace SKSE{struct Tasks{std::vector<std::function<void()>> queue;void AddTask(std::function<void()> f){queue.push_back(f);}void Run(){auto work=queue;queue.clear();for(auto& f:work)f();}}tasks;Tasks* GetTaskInterface(){return &tasks;}}
 int frames=0,npcUpdates=0;float lastNPCDrift=0;
 void originalNPCUpdate(RE::Actor* a,float dt){++frames;RideHooks::MovementDelta(a,dt);}
@@ -68,7 +69,8 @@ int main(){
  Extras::bound=false;NPCUpdate(&actor,.016f);assert(actor.pos.x>0);
  RE::Actor mount;mount.id=12;rideActor=&mount;NPCUpdate(&mount,.016f);assert(!(mount.runtime.boolFlags.value&(1u<<29)));rideActor=nullptr;
  targets[actor.id].posePending=true;NPCUpdate(&actor,.016f);assert(targets[actor.id].posePending&&SKSE::tasks.queue.size()==1);SKSE::tasks.Run();assert(!targets[actor.id].posePending&&Crawl::resumes==1);
- NPCUpdate(&actor,.016f);assert(Crawl::resumes==1);
+ NPCUpdate(&actor,.016f);assert(Crawl::resumes==1&&Crawl::inspected==0);
+ config.logLevel=4;NPCUpdate(&actor,.016f);assert(Crawl::inspected==1);config.logLevel=0;
  targets[actor.id]={true,true};Crawl::released=false;NPCUpdate(&actor,.016f);SKSE::tasks.Run();assert(targets[actor.id].posePending); // B/pending restore does not restart conversion.
  puts("PASS: production NPCUpdate + anchor gate + movement hook: 1000 fixed frames still animate, no new force-update flag; release/other actors/forced relocation pass, nested scope restored. Engine doubles, not game QA.");
 }

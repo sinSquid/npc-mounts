@@ -44,7 +44,7 @@ bool Landing(RE::Actor* player,RE::Actor* actor,RE::NiPoint3& result){
         if(Mounts::Ray(world,origin+RE::NiPoint3{0,0,48},point+RE::NiPoint3{0,0,48},wall))continue;
         const auto top=point+RE::NiPoint3{0,0,64},bottom=point-RE::NiPoint3{0,0,160};
         if(!Mounts::Ray(world,top,bottom,floor))continue;
-        result=top+(bottom-top)*floor.rayOutput.hitFraction;result.z+=5.f;return true;
+        result=top+(bottom-top)*floor.rayOutput.hitFraction;return true;
     }
     return false;
 }

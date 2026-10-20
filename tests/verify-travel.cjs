@@ -51,7 +51,7 @@ int main(){using namespace Travel;
  travel();auto before=moves;RE::UI::GetSingleton()->loading=true;run(100);assert(moves==before);RE::UI::GetSingleton()->loading=false;p.ready=false;run(100);assert(moves==before);p.ready=true;run(100);assert(moves==before+1);
  travel();before=moves;a.loaded=true;a.ready=false;run(60);assert(moves==before);a.loaded=false;run(30);assert(moves==before+1);a.loaded=a.ready=true;
  travel();before=moves;Mounts::floors=false;run(600);assert(moves==before&&!tracker.pending);Mounts::floors=true;run(100);assert(moves==before); // no delayed infinite retry
- RE::NiPoint3 landing;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z-5)<.001f);
+ RE::NiPoint3 landing;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z)<.001f);
  Remember(&a);SKSE::SerializationInterface save;Save(&save);assert(save.tag=='TRVL'&&save.version==1&&save.value==a.id);Revert();assert(last==0&&!tracker.initialized);assert(Load(&save,'TRVL',1,4)&&last==a.id+100&&!tracker.initialized);assert(!Load(&save,'NMNT',5,4));save.resolve=false;assert(Load(&save,'TRVL',1,4)&&last==0);assert(Load(&save,'TRVL',2,4)&&last==0);assert(Load(&save,'TRVL',1,8)&&last==0);
  std::puts("PASS: actual travel tracker/Tick/landing/save-load: normal exterior walking, doors/world/instant relocation, loading gap, settling at 30/60/144 FPS, one shot, fixed/leashed/restoring/dead targets, queued source, no floor timeout, ID resolution and clean new-save baseline.");}
 `);

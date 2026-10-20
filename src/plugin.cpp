@@ -34,6 +34,7 @@ struct State {
     float requestedScale = -1.f; // Session-only: reapply once after load, not every frame.
     bool leashMoving = false;
     bool posePending = false; // Session-only: let the scaled model finish one native update.
+    Motion::ObservedMovement unriddenMotion; // Session-only; no save format change.
 };
 std::unordered_map<RE::FormID, State> targets;
 RE::TESFaction* mountFaction{};
@@ -158,6 +159,7 @@ void SyncMount(RE::Actor* mount, RE::Actor* player, bool force = false)
     cc->fallTime = 0.f;
     auto position = player->GetPosition();position.z-=WaterRide::Offset();
     if (force || mount->GetPosition() != position) mount->SetPosition(position, true);
+    WaterRide::Applied(mount);
     // Use the reference rotation API instead of relying only on a heading change
     // while the actor's autonomous movement is blocked.
     const RE::NiPoint3 angle{0.f,0.f,player->GetAngleZ()+config.headingDegrees*std::numbers::pi_v<float>/180.f};
@@ -428,13 +430,22 @@ void Tick(RE::Actor* player, float delta)
             if(state.posePending)continue;
             if(state.animation<0)ResetPose(actor,state); // Recover a load task that ran before 3D was ready.
             HoldPose(actor);ApplyStats(actor,state);
+            int observedAnimation=0;
+            if(!Riding(actor)&&!Extras::Bound(actor)&&!state.restoreRequested){
+                const auto position=actor->GetPosition();
+                observedAnimation=state.unriddenMotion.Update(position.x,position.y,actor->GetParentCell()->GetFormID(),
+                    delta,config.runThreshold,config.sprintThreshold);
+            }else state.unriddenMotion.Reset();
             if(Extras::Leashed(actor))if(auto* controller=actor->GetCharController()){
                 state.leashMoving=true;
                 RE::hkVector4 velocity;controller->GetLinearVelocityImpl(velocity);
-                const float speed=std::hypot(velocity.quad.m128_f32[0],velocity.quad.m128_f32[1])*RE::bhkWorld::GetWorldScaleInverse();
+                const float speed=std::max(state.unriddenMotion.speed,
+                    std::hypot(velocity.quad.m128_f32[0],velocity.quad.m128_f32[1])*RE::bhkWorld::GetWorldScaleInverse());
                 int gait=std::clamp(state.animation,0,3);SetMotion(actor,state,Motion::Choose(speed,1,0,gait,config.runThreshold,config.sprintThreshold));
             }
             if(!Extras::Leashed(actor)&&state.leashMoving){state.leashMoving=false;SetMotion(actor,state,0);StopMotion(actor);}
+            if(!Riding(actor)&&!Extras::Leashed(actor)&&!Extras::Bound(actor)&&!state.restoreRequested)
+                SetMotion(actor,state,observedAnimation);
             if(!Riding(actor))Crawl::Update(actor,state.animation,delta);
         }
     }
@@ -458,7 +469,11 @@ void Tick(RE::Actor* player, float delta)
             static_cast<unsigned>(cc->wantState),static_cast<unsigned>(cc->context.currentState),cc->jumpHeight,
             velocity.quad.m128_f32[2],cc->outVelocity.quad.m128_f32[2],cc->flags.underlying());
     }
-    const float speed = std::hypot(velocity.quad.m128_f32[0], velocity.quad.m128_f32[1]) * RE::bhkWorld::GetWorldScaleInverse();
+    float speed = std::hypot(velocity.quad.m128_f32[0], velocity.quad.m128_f32[1]) * RE::bhkWorld::GetWorldScaleInverse();
+    // Water-state samples can report zero linear velocity while outVelocity
+    // drives actual movement. Use its horizontal component for gait only.
+    if(speed<2.f&&cc->context.currentState==RE::hkpCharacterStateType::kSwimming)
+        speed=std::hypot(cc->outVelocity.quad.m128_f32[0],cc->outVelocity.quad.m128_f32[1])*RE::bhkWorld::GetWorldScaleInverse();
     const bool air = cc->context.currentState == RE::hkpCharacterStateType::kInAir || cc->context.currentState == RE::hkpCharacterStateType::kJumping;
     // Jumping can still carry ground/support velocity before the jump impulse.
     // Acknowledge the pending request only after entering InAir; height was
@@ -634,6 +649,7 @@ void NPCUpdate(RE::Actor* actor, float delta)
         });
     }
     if(Riding(actor))AuditMotionStage(actor,"mount-after");
+    if(config.logLevel>=4&&Converted(actor))Crawl::Inspect(actor);
     Extras::AfterActorUpdate(actor);
     auto mount = ridden.get();
     if (mount.get() != actor || actor->IsDead() || !actor->Get3D() || RE::UI::GetSingleton()->GameIsPaused()) return;
@@ -1009,7 +1025,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESSpellCastEvent>(&events);
         RegisterRideInput();
         spdlog::info("Ready 0.4.4: equipment restore, capture, human anchor and transition poses");
-        spdlog::info("Runtime Y4.16 candidate: water recovery ledger, equipment snapshot lifetime and transactional INI saving; game validation pending");
+        spdlog::info("Runtime Y4.19 candidate: water-state gait speed uses horizontal output when linear velocity is zero; game validation pending");
         spdlog::info("Build compiled {} {}: game validation pending",__DATE__,__TIME__);
     }
     if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {

@@ -11,6 +11,7 @@ void UpdateBound(RE::Actor* actor,float delta);
 bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway);
 bool Working(RE::Actor* actor);
 void LogOutput();
+void Inspect(RE::Actor* actor);
 void Remove(RE::FormID id);
 void Clear();
 }

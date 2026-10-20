@@ -12,7 +12,7 @@ if($LASTEXITCODE){throw 'Installed engine ABI evidence differs; do not deploy co
 if($LASTEXITCODE){throw 'Installed movement/camera entry differs; do not deploy riding hooks'}
 & $node 'tools/inspect-jump.cjs'
 if($LASTEXITCODE){throw 'Installed native jump instructions differ; do not deploy jump request'}
-foreach($name in @('ride-hooks','ride-drive','ride-jump','ride-gait','config','spell-migration','dismount-timing','dismount','input','recovery','restore','seat','seat-binding','sync','transition','restraint-hooks','anchor-update','leash-lifecycle','binding-release','actor-load','queued-actions','movement-compat','recast','mount-timing','crawl','capture','travel','wardrobe','ray','ride-collision')){
+foreach($name in @('ride-hooks','ride-drive','ride-jump','ride-gait','unridden','config','spell-migration','dismount-timing','dismount','input','recovery','restore','seat','seat-binding','sync','transition','restraint-hooks','anchor-update','leash-lifecycle','binding-release','actor-load','queued-actions','movement-compat','recast','mount-timing','crawl','capture','travel','wardrobe','ray','ride-collision')){
     & $node "tests/verify-$name.cjs"
     if($LASTEXITCODE){throw "Generator failed: $name"}
     $testArgs=if($name -eq 'seat'){'build\test-Dismount.nmp build\test-Rider.nmr'}elseif($name -eq 'seat-binding'){'build\test-Dismount.nmp'}elseif($name -eq 'crawl'){$CrawlBank}else{''}

@@ -13,6 +13,7 @@ inline bool Sample(unsigned,std::uint64_t=500){return true;}
 }
 // WaterRide itself is executed by water-ride.cpp; other suites isolate its effects.
 namespace WaterRide {
+template<class... T>void Applied(T...){}
 template<class... T>void Begin(T...){}
 template<class... T>void End(T...){}
 template<class... T>void Remove(T...){}
