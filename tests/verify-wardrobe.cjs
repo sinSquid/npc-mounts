@@ -18,6 +18,7 @@ fs.writeFileSync(path.join(repo,'build/wardrobe-regression.cpp'),`
 #include <vector>
 #include <cstdint>
 #include <cstdio>
+namespace Diagnostics{template<class... A>void Trace(A&&...){}}
 namespace RE {
 struct ExtraUniqueID{unsigned uniqueID=42;};
 struct ExtraDataList{bool valid=true;ExtraUniqueID id;template<class T>T* GetByType(){assert(valid);return &id;}};

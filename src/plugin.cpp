@@ -48,6 +48,8 @@ RE::ActorHandle ridden;
 std::uint32_t mountControllerFlags{}, playerControllerFlags{};
 bool firstPersonBefore{};
 float jumpTimer{}, previousHeading{}, restoreRetry{};
+float seatSilentTime{};
+unsigned lastSeatWrite{};
 Motion::RideState rideMotion;
 bool wasAir{};
 float rideLogTimer{};
@@ -278,6 +280,16 @@ void BeginDismount() {
     const float angle=mount->GetAngleZ();downOffset={std::cos(angle)*transitionSideOffset,-std::sin(angle)*transitionSideOffset,0.f};
     Seat::Entering(false);Seat::Update(RE::PlayerCharacter::GetSingleton(),mount.get(),config,0.f,downOffset);
 }
+bool SeatOutputTimedOut(float delta){
+    const auto current=Seat::WriteSequence();
+    if(current!=lastSeatWrite){
+        lastSeatWrite=current;
+        seatSilentTime=0.f;
+    }else{
+        seatSilentTime+=std::clamp(delta,0.f,.1f);
+    }
+    return seatSilentTime>=3.f;
+}
 bool ConversionRejected(RE::Actor* actor,const char* reason){
     spdlog::warn("Conversion rejected ref={:08X}: {}",actor?actor->GetFormID():0,reason);
     RE::SendHUDMessage::ShowHUDMessage(reason);return false;
@@ -501,7 +513,19 @@ void Tick(RE::Actor* player, float delta)
         const float t=std::clamp(transitionTime/duration,0.f,1.f);
         Seat::Motion(delta,false,0);
         Seat::Update(player,mount.get(),config,upActive?1.f-t:t,downOffset);
-        if(t>=1.f){if(upActive){upActive=false;transitionTime=0.f;playerFlags.reset(downFlags);playerFlags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags));Seat::Entering(false);Seat::Update(player,mount.get(),config);}else{Dismount();} }
+        if(t>=1.f){
+            if(upActive){
+                upActive=false;transitionTime=0.f;
+                lastSeatWrite=Seat::WriteSequence();seatSilentTime=0.f;
+                playerFlags.reset(downFlags);playerFlags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags));
+                Seat::Entering(false);Seat::Update(player,mount.get(),config);
+            }else{Dismount();}
+        }
+        return;
+    }
+    if(SeatOutputTimedOut(delta)){
+        Dismount(true);
+        RE::SendHUDMessage::ShowHUDMessage("座位姿态持续未输出，已解除骑乘");
         return;
     }
     const float turn = std::remainder(player->GetAngleZ() - previousHeading, 2.f * std::numbers::pi_v<float>);

@@ -24,7 +24,15 @@ struct SkeletonPtr{Skeleton* p{};SkeletonPtr()=default;SkeletonPtr(Skeleton* val
 struct Setup{SkeletonPtr animationSkeleton;};struct Character{Setup* setup;};
 struct BShkbAnimationGraph{Character characterInstance;};
 struct BSAnimationGraphManager{std::vector<BSTSmartPointer<BShkbAnimationGraph>>graphs;};
-struct NiAVObject{};struct Actor{BSTSmartPointer<BSAnimationGraphManager> manager;NiAVObject root;bool GetAnimationGraphManager(BSTSmartPointer<BSAnimationGraphManager>& m){m=manager;return bool(m);}NiAVObject* Get3D(){return &root;}};
+struct NiAVObject{};struct Actor{
+ BSTSmartPointer<BSAnimationGraphManager> manager;NiAVObject root;int lookups=0;bool loseSecondLookup=false;
+ bool GetAnimationGraphManager(BSTSmartPointer<BSAnimationGraphManager>& m){
+  ++lookups;
+  m=loseSecondLookup&&lookups>1?nullptr:manager;
+  return bool(m);
+ }
+ NiAVObject* Get3D(){return &root;}
+};
 }
 constexpr unsigned bones=99;std::array<std::array<char,64>,bones>names;std::array<short,bones>parents;
 struct GraphBinding{RE::BSTSmartPointer<RE::BShkbAnimationGraph>graph;unsigned count;std::array<unsigned,bones>map;std::vector<std::int16_t>parents;bool fullRoot=false;};
@@ -43,10 +51,15 @@ int main(int argc,char**argv){assert(argc==2);std::ifstream f(argv[1],std::ios::
  RE::Skeleton skeleton;for(unsigned i=0;i<bones;++i){skeleton.bones.push_back({names[i].data()});skeleton.parentIndices.push_back(parents[i]);}
  RE::Setup setup{&skeleton};auto graph=std::make_shared<RE::BShkbAnimationGraph>();graph->characterInstance.setup=&setup;
  RE::Actor actor{std::make_shared<RE::BSAnimationGraphManager>()};actor.manager->graphs.push_back(graph);
- assert(Bind(&actor)&&graphs.size()==1&&graphs[0].count==99);
+ actor.loseSecondLookup=true;
+ assert(Bind(&actor)&&graphs.size()==1&&graphs[0].count==99&&actor.lookups==1);
+ actor.lookups=0;
  wrote=true;assert(Refresh(&actor)&&graphs.size()==1&&wrote);
  auto waterGraph=std::make_shared<RE::BShkbAnimationGraph>();waterGraph->characterInstance.setup=&setup;actor.manager->graphs.push_back(waterGraph);
- assert(Refresh(&actor)&&graphs.size()==2&&!wrote);actor.manager->graphs.erase(actor.manager->graphs.begin());assert(Refresh(&actor)&&graphs.size()==1);
+ actor.lookups=0;
+ assert(Refresh(&actor)&&graphs.size()==2&&!wrote&&actor.lookups==1);
+ actor.loseSecondLookup=false;
+ actor.manager->graphs.erase(actor.manager->graphs.begin());assert(Refresh(&actor)&&graphs.size()==1);
  graph=waterGraph;
  for(unsigned i=99;i<126;++i){skeleton.bones.push_back({"XPMSSE extension"});skeleton.parentIndices.push_back(5);}assert(Bind(&actor)&&graphs[0].count==126);
  auto alias=skeleton;alias.bones[1].name="NPC LookNode [Look]";

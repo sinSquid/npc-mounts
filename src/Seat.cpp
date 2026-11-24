@@ -228,12 +228,10 @@ bool Matches(const RE::BSAnimationGraphManager& manager,const std::vector<GraphS
     }
     return index==stamp.size();
 }
-std::vector<GraphBinding> Collect(RE::Actor* player){
+std::vector<GraphBinding> Collect(const RE::BSAnimationGraphManager& manager){
     std::vector<GraphBinding> result;
-    RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;
-    if(!player->GetAnimationGraphManager(manager)||!manager)return result;
     bindError="玩家动画骨架的基础骨骼不兼容，详见NPCMounts日志";
-    for(auto& graph:manager->graphs){
+    for(const auto& graph:manager.graphs){
         if(!graph||!graph->characterInstance.setup)continue;
         auto skeleton=graph->characterInstance.setup->animationSkeleton;
         if(!skeleton||skeleton->bones.size()<bones||skeleton->parentIndices.size()!=skeleton->bones.size()){
@@ -255,18 +253,21 @@ std::vector<GraphBinding> Collect(RE::Actor* player){
 }
 bool Bind(RE::Actor* player){
     Clear();if(!loaded){bindError="座位资源未加载，请查看NPCMounts日志";spdlog::warn("Seat bind: animation resource not loaded");return false;}
-    auto next=Collect(player);if(next.empty()){bindError="玩家动画图尚未加载或基础骨骼不兼容，详见NPCMounts日志";return false;}
-    RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;player->GetAnimationGraphManager(manager);
+    RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;
+    auto* root=player?player->Get3D():nullptr;
+    if(!root||!player->GetAnimationGraphManager(manager)||!manager){bindError="玩家动画图尚未加载，详见NPCMounts日志";return false;}
+    auto next=Collect(*manager);if(next.empty()){bindError="玩家基础骨骼不兼容，详见NPCMounts日志";return false;}
     auto stamp=Snapshot(*manager);
-    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();return true;
+    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=root;return true;
 }
 void DropBindings(){std::scoped_lock lock(mutex);active=false;graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;wrote=false;finished=false;}
 bool Refresh(RE::Actor* player){
     RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;if(!player||!player->GetAnimationGraphManager(manager)||!manager){DropBindings();return false;}
-    {std::scoped_lock lock(mutex);if(boundManager==manager.get()&&boundRoot==player->Get3D()&&Matches(*manager,graphStamp))return !graphs.empty();}
-    auto next=Collect(player);if(next.empty()){DropBindings();return false;}
+    auto* root=player->Get3D();if(!root){DropBindings();return false;}
+    {std::scoped_lock lock(mutex);if(boundManager==manager.get()&&boundRoot==root&&Matches(*manager,graphStamp))return !graphs.empty();}
+    auto next=Collect(*manager);if(next.empty()){DropBindings();return false;}
     auto stamp=Snapshot(*manager);
-    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=player->Get3D();active=active&&!graphs.empty();wrote=false;return true;
+    std::scoped_lock lock(mutex);graphs=std::move(next);graphStamp=std::move(stamp);boundManager=manager.get();boundRoot=root;active=active&&!graphs.empty();wrote=false;return true;
 }
 const char* BindError(){return bindError;}
 void Clear(){std::scoped_lock lock(mutex);active=false;graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;wrote=false;finished=false;progress=-1.f;entering=false;filterValid=false;filteredRoot=nullptr;frameDelta=0.f;riderTime=0.f;riderGait=0;riderBlend=0.f;}
@@ -279,7 +280,15 @@ void Motion(float delta,bool air,int gait){
 }
 void Entering(bool value){std::scoped_lock lock(mutex);entering=value;finished=false;}
 bool Working(){return wrote.load(std::memory_order_relaxed);}
-unsigned TakeWrites(){return writes.exchange(0,std::memory_order_relaxed);}
+unsigned WriteSequence(){return writes.load(std::memory_order_relaxed);}
+unsigned TakeWrites(){
+    // Called only on the main thread. Keep the pose sequence independent of log sampling.
+    static unsigned previous=0;
+    const auto current=WriteSequence();
+    const auto count=current-previous;
+    previous=current;
+    return count;
+}
 void LogOutput(){std::scoped_lock lock(mutex);
     spdlog::debug("Seat output active={} graphs={} calls={} matched={} writes={} rejected={},{},{},{},{},{},{} track=count:{}/{} capacity:{} flags:{} type:{} stride:{} offset:{} fraction:{} target=({},{},{})",
         active,graphs.size(),audit.calls,audit.matched,audit.writes,audit.rejected[0],audit.rejected[1],audit.rejected[2],audit.rejected[3],audit.rejected[4],audit.rejected[5],audit.rejected[6],audit.count,audit.bound,audit.capacity,audit.flags,audit.type,audit.bytes,audit.offset,audit.fraction,target.x,target.y,target.z);audit={};}

@@ -36,15 +36,30 @@ bool Load(SKSE::SerializationInterface* save,std::uint32_t type,std::uint32_t ve
 bool Landing(RE::Actor* player,RE::Actor* actor,RE::NiPoint3& result){
     auto* cc=player->GetCharController();auto* world=cc?cc->GetHavokWorld():nullptr;if(!world)return false;
     const auto origin=player->GetPosition();const float yaw=player->GetAngleZ();
-    const float radius=std::clamp(96.f*actor->GetScale(),80.f,240.f);
+    const float scale=actor->GetScale();
+    if(!std::isfinite(scale)||scale<=0.f)return false;
+    const float radius=std::clamp(96.f*scale,80.f,240.f);
+    const float facing=actor->GetAngleZ(); // Relocate preserves the actor's heading.
+    const RE::NiPoint3 shoulder{std::cos(facing)*18.f*scale,-std::sin(facing)*18.f*scale,0};
     for(float distance:{radius,radius*.6f})for(unsigned i=0;i<8;++i){
         const float angle=yaw+std::numbers::pi_v<float>+i*std::numbers::pi_v<float>/4;
         const RE::NiPoint3 point=origin+RE::NiPoint3{std::sin(angle)*distance,std::cos(angle)*distance,0};
         RE::bhkPickData wall{},floor{};
-        if(Mounts::Ray(world,origin+RE::NiPoint3{0,0,48},point+RE::NiPoint3{0,0,48},wall))continue;
         const auto top=point+RE::NiPoint3{0,0,64},bottom=point-RE::NiPoint3{0,0,160};
         if(!Mounts::Ray(world,top,bottom,floor))continue;
-        result=top+(bottom-top)*floor.rayOutput.hitFraction;return true;
+        const auto ground=top+(bottom-top)*floor.rayOutput.hitFraction;
+        const RE::NiPoint3 torso{0,0,48.f*scale},head{0,0,128.f*scale};
+        if(Mounts::Ray(world,origin+torso,ground+torso,wall)||
+           Mounts::Ray(world,origin+head,ground+head,wall))continue;
+        // Check overhangs above the actual landing floor, including both shoulders.
+        const RE::NiPoint3 start{0,0,std::min(4.f,8.f*scale)};
+        const RE::NiPoint3 shoulderHeight{0,0,104.f*scale};
+        const auto shoulders=ground+shoulderHeight;
+        if(Mounts::Ray(world,ground+start,ground+head,wall)||
+           Mounts::Ray(world,shoulders-shoulder,shoulders+shoulder,wall)||
+           Mounts::Ray(world,ground+shoulder+start,ground+shoulder+shoulderHeight,wall)||
+           Mounts::Ray(world,ground-shoulder+start,ground-shoulder+shoulderHeight,wall))continue;
+        result=ground;return true;
     }
     return false;
 }
