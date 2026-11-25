@@ -2,6 +2,7 @@
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'src/plugin.cpp'),'utf8');
 function take(sig){const start=source.indexOf(sig);assert(start>=0);let end=source.indexOf('{',start)+1,n=1;while(n){const c=source[end++];if(c==='{')n++;if(c==='}')n--;}return source.slice(start,end);}
+const restoreEvent=take('else if (event->magicEffect == restoreEffect->GetFormID())');
 fs.writeFileSync(path.join(root,'build/queued-actions-regression.cpp'),`
 #include <cassert>
 #include "../src/Motion.h"
@@ -17,6 +18,9 @@ namespace RE {
 struct Actor;struct Ref{Actor* p;Actor* get(){return p;}explicit operator bool()const{return p;}};
 struct ActorHandle{Actor* p=nullptr;Ref get()const{return{p};}explicit operator bool()const{return p;}void reset(){p=nullptr;}};
 struct Actor{ActorHandle GetHandle(){return{this};}};
+struct ObjectRef {Actor* actor;template<class T>T* As(){return actor;}};
+struct ObjectRefHandle{ObjectRef** slot=nullptr;ObjectRef* get()const{return slot?*slot:nullptr;}explicit operator bool()const{return slot!=nullptr;}};
+struct CrosshairPickData{ObjectRefHandle pick;ObjectRefHandle GetActiveTarget(){return pick;}static CrosshairPickData* GetSingleton(){static CrosshairPickData data;return &data;}};
 struct ActivateHandler{};struct ButtonEvent{bool IsDown(){return true;}};
 struct InputEvent{int action=1;ButtonEvent button;int QUserEvent(){return action;}ButtonEvent* AsButtonEvent(){return &button;}};
 struct UserEvents{int activate=1;static UserEvents* GetSingleton(){static UserEvents e;return &e;}};
@@ -36,7 +40,18 @@ RE::Actor* Crosshair(){return &actor;}bool Converted(RE::Actor*){return converte
 bool nativeAccepted=true;bool originalActivate(RE::ActivateHandler*,RE::InputEvent*){return nativeAccepted;}void Mount(RE::Actor* a){++mounts;ridden=a->GetHandle();}
 ${take('bool ActivateInput(')}
 ${take('void Revert(')}
+int restored=0,restoredAll=0;
+void Restore(RE::Actor* actor){if(actor)++restored;}void RestoreAll(){++restoredAll;}
+void QueueRestore(){auto epoch=Extras::Session();${restoreEvent.slice(restoreEvent.indexOf('{')+1,-1)}}
 int main(){RE::ActivateHandler handler;RE::InputEvent event;
+ auto& pick=RE::CrosshairPickData::GetSingleton()->pick;
+ RE::ObjectRef door{nullptr},npc{&actor};RE::ObjectRef* reference=&door;pick.slot=&reference;
+ QueueRestore();SKSE::tasks.Run();assert(restored==0&&restoredAll==0);
+ reference=&npc;QueueRestore();reference=nullptr;SKSE::tasks.Run();assert(restored==0&&restoredAll==0);
+ reference=&npc;QueueRestore();SKSE::tasks.Run();assert(restored==1&&restoredAll==0);
+ pick={};QueueRestore();SKSE::tasks.Run();assert(restored==1&&restoredAll==1);
+ reference=&door;pick.slot=&reference;ridden=actor.GetHandle();QueueRestore();SKSE::tasks.Run();
+ assert(restored==2&&restoredAll==1);ridden.reset();
  assert(!ActivateInput(&handler,&event)&&mounts==0&&SKSE::tasks.queue.size()==1);SKSE::tasks.Run();assert(mounts==1&&ridden);ridden.reset();
  ActivateInput(&handler,&event);suppressedButtons.insert(29);dismountHold.Press();targets[1]=1;Revert(nullptr);assert(suppressedButtons.empty()&&targets.empty()&&!dismountHold.pressed);
  SKSE::tasks.Run();assert(mounts==1&&!ridden); // old save's delayed mount cannot run in the new save

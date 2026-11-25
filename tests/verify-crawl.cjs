@@ -37,7 +37,7 @@ namespace RE{constexpr std::uintptr_t VTABLE_hkbBehaviorGraph[]{1};}
 namespace REL{template<class T>struct Relocation{Relocation(T){}template<class F>std::uintptr_t write_vfunc(int slot,F){assert(slot==0x17);++hookWrites;return reinterpret_cast<std::uintptr_t>(&nativeOriginal);}};}
 bool Bind(RE::Actor*,bool publish=true);
 ${take('void Reindex(')}
-${['void Blend(','void Sample(','std::string_view Canonical(','std::string OverlayName(','bool OverlayBone(','void GeneratePose(','bool Available(','bool Install(','std::vector<GraphStamp> Snapshot(','bool Matches(','bool BindMode(','bool Bind(','bool BindBound(','bool Resume(','bool WaitingForRetry(','bool StaticAnchor(','void Update(','void UpdateBound(','bool Anchor(','bool Working(','void Remove(','void Clear('].map(take).join('\n')}
+${['void BlendRotation(','void Blend(','float FramePosition(','void Sample(','std::string_view Canonical(','std::string OverlayName(','bool OverlayBone(','void GeneratePose(','bool Available(','bool Install(','std::vector<GraphStamp> Snapshot(','bool Matches(','bool BindMode(','bool Bind(','bool BindBound(','bool Resume(','bool WaitingForRetry(','bool StaticAnchor(','void Update(','void UpdateBound(','bool Anchor(','bool Working(','void Remove(','void Clear('].map(take).join('\n')}
 int main(int argc,char** argv){assert(argc==2||argc==3);
  if(argc==3){assert(!Install(argv[2])&&!Available()&&hookWrites==0);std::puts("PASS: original failing J bank rejected by production Install.");}
  std::ifstream f(argv[1],std::ios::binary);std::string good((std::istreambuf_iterator<char>(f)),{});assert(!good.empty());
@@ -108,6 +108,19 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
   sk->bones.front().name="missing";assert(!BindBound(&giant));sk->bones.front().name=original;
   RE::NiAVObject rebuilt;giant.model=&rebuilt;UpdateBound(&giant,.01f);assert(actors.at(2).root==&rebuilt);
   assert(sk->bones.size()>=15&&sk->bones.size()<99);assert(BindBound(&giant));UpdateBound(&giant,.016f);assert(actors.at(2).bound&&actors.at(2).gait==int(boundClip));
-  const unsigned count=static_cast<unsigned>(sk->bones.size()),header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes);auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};GeneratePose(nullptr,ctx,nullptr,out,0);assert(actors.at(2).wrote);Remove(2);}
+  assert(overlayBones.size()==sk->bones.size());
+  for(float fps:{30.f,60.f,144.f}){
+   auto& state=actors.at(2);Frame reference=state.pose;
+   for(unsigned frame=0;frame<unsigned(fps);++frame){
+    UpdateBound(&giant,1.f/fps);Frame next;Sample(clips[boundClip],state.time,next);
+    Blend(reference,next,1.f-std::exp(-20.f/fps),reference);
+    for(auto i:overlayBones)assert(!std::memcmp(reference[i].q,state.pose[i].q,sizeof(reference[i].q)));
+   }
+  }
+  const unsigned count=static_cast<unsigned>(sk->bones.size()),header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes);auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};GeneratePose(nullptr,ctx,nullptr,out,0);assert(actors.at(2).wrote);
+  assert(actors.at(2).graphs.front().requiredTracks==count);
+  --h.numData;auto before=b;auto writes=actors.at(2).writes;
+  GeneratePose(nullptr,ctx,nullptr,out,0);assert(writes==actors.at(2).writes&&before==b);
+  Remove(2);}
  Clear();assert(actors.empty()&&retries.empty()&&graphOwners.empty());std::puts("PASS: real 8-clip bank; cached centreline anchor, graph owner lifecycle, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}
 `);

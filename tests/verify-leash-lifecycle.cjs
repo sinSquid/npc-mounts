@@ -29,7 +29,8 @@ struct PlayerCharacter:Actor {static PlayerCharacter* GetSingleton(){static Play
 namespace Mounts {bool Converted(RE::Actor* a){return a&&a->converted;}bool Riding(RE::Actor* a){return a->riding;}}
 ${take('enum class Phase ')};
 ${take('struct Tether ')};
-std::unordered_map<RE::FormID,Tether> tethers;std::uint64_t serial=0;bool leashAvailable=true,dispatch=true;
+std::unordered_map<RE::FormID,Tether> tethers;std::uint64_t serial=0;bool leashAvailable=true,leashCreateIfFree=true,dispatch=true;
+bool CanCreateLeash(){return leashCreateIfFree;}
 std::atomic_uint64_t leashEventsSeen{0},session{1};
 struct Pending {std::string name;std::function<void(bool)> callback;std::function<void()> invalid;};std::deque<Pending> queue;
 bool actorReady=true;bool Ready(RE::Actor*){return actorReady;}
@@ -44,7 +45,7 @@ ${take('bool Leashed(')}
 template<class... Args>bool Call(const char* name,std::function<void(bool)> fn,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn)});return true;}
 template<class... Args>bool Dispatch(const char* name,std::function<void(bool)> fn,std::function<void()> invalid,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn),std::move(invalid)});return true;}
 void Invalid(){auto fn=queue.front().invalid;assert(fn);queue.pop_front();fn();}
-void Reply(const char* name,bool value){assert(!queue.empty()&&queue.front().name==name);auto fn=queue.front().callback;queue.pop_front();fn(value);if(std::string(name)=="SetRagdollOverride"){while(!queue.empty()&&(queue.front().name=="SetLeashFollower"||queue.front().name=="SetPreventOverstretchOverride")){auto next=queue.front().callback;queue.pop_front();next(true);}}}
+void Reply(const char* name,bool value){assert(!queue.empty()&&queue.front().name==name);auto fn=queue.front().callback;queue.pop_front();fn(value);}
 ${take('bool Current(')}
 ${take('void FailTether(')}
 template<class... Args>${take('bool Mutate(')}
@@ -56,29 +57,30 @@ ${take('void AdvanceTethers(')}
 ${take('void Unleashed(')}
 ${take('void ToggleTether(')}
 int main(){RE::Actor actor;RE::known=&actor;
+ leashCreateIfFree=false;StartTether(&actor);assert(!Busy(&actor)&&queue.empty());leashCreateIfFree=true;
  ToggleTether(nullptr);assert(tethers.empty()&&queue.empty());ToggleTether(&actor,true);assert(tethers.empty()&&queue.empty());
  ToggleTether(&actor);assert(Busy(&actor));ToggleTether(&actor);assert(!tethers.at(1).wanted);Reply("IsLeashed",false);assert(!Busy(&actor));
- ToggleTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",true);ToggleTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ ToggleTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashIfFree",true);ToggleTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
  actor.bound=true;auto releaseBefore=releases;ToggleTether(&actor);assert(releases==releaseBefore+1&&!actor.bound&&queue.empty());
- actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPosition",true);Reply("SetRagdollOverride",true);
+ actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPositionIfFree",true);
  assert(Busy(&actor)&&!Leashed(&actor)&&tethers.at(1).anchor);CheckTether(&actor);Reply("IsLeashed",true);StopTether(&actor);Reply("DisconnectLeash",true);assert(!Busy(&actor));
  StartTether(&actor,true);Reply("IsLeashed",true);assert(!Busy(&actor)&&!actor.bound); // Foreign rope: rollback anchor, do not replace.
- actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPosition",false);assert(!Busy(&actor)&&!actor.bound);
+ actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashAtPositionIfFree",false);assert(!Busy(&actor)&&!actor.bound);
  leashAvailable=false;StartTether(&actor);assert(tethers.empty()&&queue.empty());leashAvailable=true;
  actor.bound=true;StartTether(&actor);assert(tethers.empty());actor.bound=false;
  actor.converted=false;StartTether(&actor);assert(tethers.empty());actor.converted=true;
  actor.riding=true;StartTether(&actor);assert(tethers.empty());actor.riding=false;
  StartTether(&actor);Reply("IsLeashed",true);assert(tethers.empty()&&queue.empty());
  StartTether(&actor);StopTether(&actor);Reply("IsLeashed",false);assert(tethers.empty()&&queue.empty());
- StartTether(&actor);Reply("IsLeashed",false);StopTether(&actor);assert(Busy(&actor));Reply("ApplyStandaloneLeash",true);assert(!Leashed(&actor));Reply("DisconnectLeash",true);assert(!Busy(&actor));
- StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",false);assert(!Busy(&actor));
- StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",false);assert(Leashed(&actor));
+ StartTether(&actor);Reply("IsLeashed",false);StopTether(&actor);assert(Busy(&actor));Reply("ApplyStandaloneLeashIfFree",true);assert(!Leashed(&actor));Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashIfFree",false);assert(!Busy(&actor));
+ StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashIfFree",true);assert(Leashed(&actor));
  dispatch=false;StopTether(&actor);assert(Busy(&actor)&&tethers.at(1).phase==Phase::Active&&!Leashed(&actor));dispatch=true;
  AdvanceTethers(1);StopTether(&actor);Reply("DisconnectLeash",false);assert(Busy(&actor)&&tethers.at(1).phase==Phase::Reconciling&&!tethers.at(1).pending);
  AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
  dispatch=false;StartTether(&actor);assert(!Busy(&actor));dispatch=true;
  StartTether(&actor);auto old=queue.front().callback;queue.clear();tethers.clear();++serial;
- StartTether(&actor);const auto token=tethers.at(1).token;old(true);assert(tethers.at(1).token==token);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",false);
+ StartTether(&actor);const auto token=tethers.at(1).token;old(true);assert(tethers.at(1).token==token);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashIfFree",true);
  StopTether(&actor);Reply("DisconnectLeash",true);assert(tethers.empty());
  StartTether(&actor);Reply("IsLeashed",false);auto staleInvalid=queue.front().invalid;Invalid();
  assert(!tethers.at(1).pending);CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
@@ -95,7 +97,7 @@ int main(){RE::Actor actor;RE::known=&actor;
  // Accepted creation is never dispatched twice. B/F cancellation survives a late result.
  StartTether(&actor);Reply("IsLeashed",false);AdvanceTethers(10);assert(tethers.at(1).phase==Phase::Failed&&tethers.at(1).pending);
  for(int i=0;i<1000;i++)StopTether(&actor);assert(queue.size()==1);
- Reply("ApplyStandaloneLeash",true);Reply("DisconnectLeash",true);assert(!Busy(&actor));
+ Reply("ApplyStandaloneLeashIfFree",true);Reply("DisconnectLeash",true);assert(!Busy(&actor));
  // Three dispatch failures, not one per frame forever. F may explicitly request reconciliation.
  tethers[1]={Phase::Active,true,++serial};dispatch=false;
  for(int i=0;i<10000;i++){AdvanceTethers(.02f);StopTether(&actor);}assert(tethers.at(1).phase==Phase::Failed&&tethers.at(1).failures==3);dispatch=true;
@@ -120,12 +122,12 @@ int main(){RE::Actor actor;RE::known=&actor;
  // Repeated cycles must not leave pending callbacks or block the next E.
  for(int i=0;i<1000;++i){StartTether(&actor);if(i%4==0)StopTether(&actor);Reply("IsLeashed",false);
   if(i%4==0){assert(!Busy(&actor)&&queue.empty());continue;}
-  if(i%4==1)StopTether(&actor);Reply("ApplyStandaloneLeash",true);
-  if(i%4!=1){Reply("SetRagdollOverride",false);StopTether(&actor);}
+  if(i%4==1)StopTether(&actor);Reply("ApplyStandaloneLeashIfFree",true);
+  if(i%4!=1){StopTether(&actor);}
   Reply("DisconnectLeash",i%4!=2);
   if(i%4==2){assert(Busy(&actor));AdvanceTethers(1);CheckTether(&actor);Reply("GetLeashHolder",false);}
   assert(!Busy(&actor)&&queue.empty());}
- StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",true);
+ StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeashIfFree",true);
  tethers.at(1).anchorAfterDisconnect=true;StopTether(&actor);Reply("DisconnectLeash",true);assert(anchorCalls==1&&tethers.empty()&&queue.empty());
  for(bool foreign:{false,true})for(bool cancel:{false,true}){
   auto before=anchorCalls;tethers[1]={Phase::Reconciling,false,++serial};tethers.at(1).anchorAfterDisconnect=true;

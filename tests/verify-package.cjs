@@ -1,7 +1,11 @@
 const fs=require('fs'),path=require('path'),assert=require('assert'),z=require('zlib'),crypto=require('crypto');
 const repo=path.resolve(__dirname,'..'),dist=process.argv[2]?path.resolve(process.argv[2]):path.join(repo,'dist'),records=[];
-function parse(b,start=0,end=b.length){for(let p=start;p<end;){const type=b.toString('ascii',p,p+4),n=b.readUInt32LE(p+4);if(type==='GRUP'){parse(b,p+24,p+n);p+=n;continue;}let data=b.subarray(p+24,p+24+n);if(b.readUInt32LE(p+8)&0x40000)data=z.inflateSync(data.subarray(4));const fields=[];for(let q=0;q<data.length;){const tag=data.toString('ascii',q,q+4),len=data.readUInt16LE(q+4);fields.push({tag,data:data.subarray(q+6,q+6+len)});q+=6+len;assert(q<=data.length);}records.push({type,id:b.readUInt32LE(p+12),flags:b.readUInt32LE(p+8),fields});p+=24+n;assert(p<=end);}}
+let groupCount=0;
+function parse(b,start=0,end=b.length){for(let p=start;p<end;){const type=b.toString('ascii',p,p+4),n=b.readUInt32LE(p+4);if(type==='GRUP'){++groupCount;parse(b,p+24,p+n);p+=n;continue;}let data=b.subarray(p+24,p+24+n);if(b.readUInt32LE(p+8)&0x40000)data=z.inflateSync(data.subarray(4));const fields=[];for(let q=0;q<data.length;){const tag=data.toString('ascii',q,q+4),len=data.readUInt16LE(q+4);fields.push({tag,data:data.subarray(q+6,q+6+len)});q+=6+len;assert(q<=data.length);}records.push({type,id:b.readUInt32LE(p+12),flags:b.readUInt32LE(p+8),fields});p+=24+n;assert(p<=end);}}
 parse(fs.readFileSync(path.join(dist,'NPCMounts.esp')));
+assert.equal(records[0].type,'TES4');
+const hedr=records[0].fields.find(f=>f.tag==='HEDR');
+assert.equal(hedr.data.readUInt32LE(4),records.length-1+groupCount,'HEDR must count data records and GRUP headers');
 assert.equal(records.length,27);assert(records[0].flags&0x200);
 const names=['人魅-人形坐骑化','人魅-解除坐骑化与束缚','人魅-固定NPC','人魅-捕获','人魅-牵引坐骑','人魅-解除牵引（旧版兼容）','人魅-人形坐骑化（旧版兼容）'];
 for(const type of ['SPEL','MGEF','BOOK']){

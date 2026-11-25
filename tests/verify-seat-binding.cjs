@@ -35,7 +35,7 @@ struct NiAVObject{};struct Actor{
 };
 }
 constexpr unsigned bones=99;std::array<std::array<char,64>,bones>names;std::array<short,bones>parents;
-struct GraphBinding{RE::BSTSmartPointer<RE::BShkbAnimationGraph>graph;unsigned count;std::array<unsigned,bones>map;std::vector<std::int16_t>parents;bool fullRoot=false;};
+struct GraphBinding{RE::BSTSmartPointer<RE::BShkbAnimationGraph>graph;unsigned count;std::array<unsigned,bones>map;std::vector<std::int16_t>parents;bool fullRoot=false;unsigned requiredTracks=0;};
 struct GraphStamp{const RE::BShkbAnimationGraph*graph;const void*skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};std::vector<GraphBinding>graphs;std::vector<GraphStamp>graphStamp;std::mutex mutex;
 const RE::BSAnimationGraphManager* boundManager=nullptr;const RE::NiAVObject* boundRoot=nullptr;
 bool loaded=true,active=true;std::atomic<bool>wrote=true,finished=true;const char* bindError="";void Clear(){graphs.clear();graphStamp.clear();boundManager=nullptr;boundRoot=nullptr;active=false;wrote=false;finished=false;}
@@ -52,7 +52,7 @@ int main(int argc,char**argv){assert(argc==2);std::ifstream f(argv[1],std::ios::
  RE::Setup setup{&skeleton};auto graph=std::make_shared<RE::BShkbAnimationGraph>();graph->characterInstance.setup=&setup;
  RE::Actor actor{std::make_shared<RE::BSAnimationGraphManager>()};actor.manager->graphs.push_back(graph);
  actor.loseSecondLookup=true;
- assert(Bind(&actor)&&graphs.size()==1&&graphs[0].count==99&&actor.lookups==1);
+ assert(Bind(&actor)&&graphs.size()==1&&graphs[0].count==99&&graphs[0].requiredTracks==99&&actor.lookups==1);
  actor.lookups=0;
  wrote=true;assert(Refresh(&actor)&&graphs.size()==1&&wrote);
  auto waterGraph=std::make_shared<RE::BShkbAnimationGraph>();waterGraph->characterInstance.setup=&setup;actor.manager->graphs.push_back(waterGraph);
@@ -61,7 +61,7 @@ int main(int argc,char**argv){assert(argc==2);std::ifstream f(argv[1],std::ios::
  actor.loseSecondLookup=false;
  actor.manager->graphs.erase(actor.manager->graphs.begin());assert(Refresh(&actor)&&graphs.size()==1);
  graph=waterGraph;
- for(unsigned i=99;i<126;++i){skeleton.bones.push_back({"XPMSSE extension"});skeleton.parentIndices.push_back(5);}assert(Bind(&actor)&&graphs[0].count==126);
+ for(unsigned i=99;i<126;++i){skeleton.bones.push_back({"XPMSSE extension"});skeleton.parentIndices.push_back(5);}assert(Bind(&actor)&&graphs[0].count==126&&graphs[0].requiredTracks==99);
  auto alias=skeleton;alias.bones[1].name="NPC LookNode [Look]";
  RE::Setup aliasSetup{&alias};auto aliasGraph=std::make_shared<RE::BShkbAnimationGraph>();aliasGraph->characterInstance.setup=&aliasSetup;
  actor.manager->graphs.push_back(aliasGraph);assert(Bind(&actor)&&graphs.size()==2);actor.manager->graphs.pop_back();

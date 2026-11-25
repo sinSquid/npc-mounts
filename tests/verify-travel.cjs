@@ -67,7 +67,7 @@ int main(){using namespace Travel;
  travel();auto before=moves;RE::UI::GetSingleton()->loading=true;run(100);assert(moves==before);RE::UI::GetSingleton()->loading=false;p.ready=false;run(100);assert(moves==before);p.ready=true;run(100);assert(moves==before+1);
  travel();before=moves;a.loaded=true;a.ready=false;run(60);assert(moves==before);a.loaded=false;run(30);assert(moves==before+1);a.loaded=a.ready=true;
  travel();before=moves;Mounts::floors=false;run(600);assert(moves==before&&!tracker.pending);Mounts::floors=true;run(100);assert(moves==before); // no delayed infinite retry
- RE::NiPoint3 landing;Mounts::steepAll=true;assert(!Landing(&p,&a,landing));Mounts::steepAll=false;Mounts::steepFirst=true;assert(Landing(&p,&a,landing)&&std::abs(landing.x)>.01f);Mounts::steepFirst=false;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z)<.001f);
+ p.pos={0,0,0};RE::NiPoint3 landing;Mounts::steepAll=true;assert(!Landing(&p,&a,landing));Mounts::steepAll=false;Mounts::steepFirst=true;assert(Landing(&p,&a,landing)&&std::abs(landing.x)>.01f);Mounts::steepFirst=false;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z)<.001f);
  p.pos={0,0,0};Mounts::groundOffset=24.f;
  for(auto obstacle:{Mounts::Obstacle::HeadPath,Mounts::Obstacle::Ceiling}){
   Mounts::obstacle=obstacle;a.scale=1.f;

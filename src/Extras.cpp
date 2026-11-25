@@ -37,7 +37,7 @@ std::uint64_t serial=0;
 std::atomic_uint64_t session{0};
 std::atomic_uint64_t leashEventsSeen{0};
 float poll=0;
-bool hooksReady=false,leashAvailable=false;
+bool hooksReady=false,leashAvailable=false,leashCreateIfFree=false;
 void StartTether (RE::Actor* actor,bool anchor=false);
 void StopTether (RE::Actor* actor);
 RE::TESObjectSTAT* postBase{};RE::TESObjectARMO* cuffs{};
@@ -85,6 +85,21 @@ bool Eligible(RE::Actor* actor,bool humanoid=true){
         !actor->IsInKillMove()&&actor->AsActorState()->GetSitSleepState()==RE::SIT_SLEEP_STATE::kNormal&&!actor->GetMount(nativeMount);
 }
 void DeletePost(RE::FormID id){if(auto* ref=RE::TESForm::LookupByID<RE::TESObjectREFR>(id)){ref->Disable();ref->SetDelete(true);}}
+bool CanCreateLeash(){
+    if(!leashCreateIfFree)return false;
+    auto* vm=RE::BSScript::Internal::VirtualMachine::GetSingleton();
+    RE::BSTSmartPointer<RE::BSScript::ObjectTypeInfo> type;
+    if(!vm||!vm->GetScriptObjectType("LeashFramework",type)||!type)return false;
+    bool hand=false,post=false;
+    const auto* functions=type->GetGlobalFuncIter();
+    for(unsigned i=0;functions&&i<type->GetNumGlobalFuncs();++i){
+        const auto& fn=functions[i].func;
+        if(!fn||!fn->GetIsNative())continue;
+        hand|=fn->GetParamCount()==14&&fn->GetName()=="ApplyStandaloneLeashIfFree";
+        post|=fn->GetParamCount()==16&&fn->GetName()=="ApplyStandaloneLeashAtPositionIfFree";
+    }
+    return hand&&post;
+}
 void ReleaseWithNotice(RE::Actor* actor,bool pacify){
     bool alreadyRequested;
     {
@@ -106,6 +121,7 @@ bool Bind(RE::Actor* actor,bool pacify){
     }
     const bool converted=Mounts::Converted(actor);
     if(!pacify&&!converted){Notify("人魅-固定NPC只对已转换的坐骑NPC有效");return false;}
+    if(!pacify&&leashAvailable&&!CanCreateLeash()){Notify("固定NPC需要配套的 LeashFramework DLL 与 PEX，请更新");return false;}
     if(!pacify&&!leashAvailable){Notify("人魅-固定NPC需要启用LeashFramework及Leash.esm");return false;}
     if(!hooksReady||!cuffs||(!pacify&&!postBase)){Notify("束缚功能未初始化，请查看NPCMounts日志");return false;}
     if(!pacify&&Eligible(actor)&&Leashed(actor)&&!Bound(actor)&&!Mounts::Riding(actor)){
@@ -227,6 +243,7 @@ void StopTether(RE::Actor* actor){
     }
 }
 void StartTether(RE::Actor* actor,bool anchor){
+    if(leashAvailable&&!CanCreateLeash()){Notify("创建牵引需要配套的 LeashFramework DLL 与 PEX，请更新");return;}
     if(!leashAvailable){Notify("人魅-牵引坐骑需要启用LeashFramework及Leash.esm");return;}
     if(!Eligible(actor)||(anchor?!Bound(actor):!Mounts::Converted(actor))||(!anchor&&Bound(actor))||Busy(actor)||Mounts::Riding(actor)){
         Notify("目标状态不允许连接牵引绳");return;
@@ -243,16 +260,10 @@ void StartTether(RE::Actor* actor,bool anchor){
         auto complete=[id,handle,token,anchor](bool applied){
             Diagnostics::Trace("Tether apply target={:08X} token={} anchor={} applied={} current={}",id,token,anchor,applied,Current(id,token));
             if(!Current(id,token))return;
-            if(!applied){tethers.erase(id);if(anchor)if(auto ref=handle.get())Release(ref.get());Notify("LeashFramework未能创建牵引绳，固定已撤回，请查看日志");return;}
+            if(!applied){tethers.erase(id);if(anchor)if(auto ref=handle.get())Release(ref.get());Notify(anchor?"未能连接固定桩，已撤回固定":"未能创建玩家牵引，请查看日志");return;}
             auto ref=handle.get();tethers.at(id).phase=Phase::Active;tethers.at(id).pending=false;tethers.at(id).elapsed=0;
             if(!ref){tethers.erase(id);return;}
             if(!tethers.at(id).wanted||!Eligible(ref.get())||(anchor?!Bound(ref.get()):!Mounts::Converted(ref.get()))){StopTether(ref.get());return;}
-            // Keep humanoid crawl locomotion: no ragdoll pull.
-            Call("SetRagdollOverride",[](bool){},ref.get(),0);
-            if(!anchor){
-                Call("SetLeashFollower",[](bool){},ref.get(),0);
-                Call("SetPreventOverstretchOverride",[](bool){},ref.get(),0);
-            }
             Notify(anchor?"坐骑已通过绳索连接固定桩":"已连接牵引绳；再次施放人魅-牵引坐骑可解除");
         };
         bool dispatched=false;
@@ -261,9 +272,9 @@ void StartTether(RE::Actor* actor,bool anchor){
             auto* post=Find(id,b)?RE::TESForm::LookupByID<RE::TESObjectREFR>(b.post):nullptr;
             if(post&&SameSpace(post->GetParentCell(),ref->GetParentCell())){
                 const auto p=post->GetPosition()+RE::NiPoint3{0,0,48};
-                dispatched=Mutate(id,token,"ApplyStandaloneLeashAtPosition",complete,ref.get(),post->GetParentCell(),p.x,p.y,p.z,std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,0.f,0.f,8.f);
+                dispatched=Mutate(id,token,"ApplyStandaloneLeashAtPositionIfFree",complete,ref.get(),post->GetParentCell(),p.x,p.y,p.z,std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,0.f,0.f,8.f,1);
             }
-        }else dispatched=Mutate(id,token,"ApplyStandaloneLeash",complete,RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),ref.get(),std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,true,0.f,0.f,8.f);
+        }else dispatched=Mutate(id,token,"ApplyStandaloneLeashIfFree",complete,RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),ref.get(),std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,true,0.f,0.f,8.f,3);
         if(!dispatched){
             tethers.erase(id);if(anchor)Release(ref.get());Notify("牵引接口调用失败，未进入牵引状态");
         }
@@ -436,7 +447,9 @@ bool Matches(RE::FormID effect){return std::any_of(effects.begin(),effects.end()
 void Initialize(){
     auto* data=RE::TESDataHandler::GetSingleton();postBase=data->LookupForm<RE::TESObjectSTAT>(0x820,"NPCMounts.esp");cuffs=data->LookupForm<RE::TESObjectARMO>(0x821,"NPCMounts.esp");
     for(unsigned i=0;i<4;++i)effects[i]=data->LookupForm<RE::EffectSetting>(0x806+i,"NPCMounts.esp");
-    leashAvailable=GetModuleHandleW(L"LeashFramework.dll")&&data->LookupModByName("Leash.esm");
+    const auto module=GetModuleHandleW(L"LeashFramework.dll");
+    leashAvailable=module&&data->LookupModByName("Leash.esm");
+    leashCreateIfFree=leashAvailable&&GetProcAddress(module,"LeashFramework_SupportsApplyIfFree");
     if(leashAvailable)SKSE::GetModCallbackEventSource()->AddEventSink(&leashEvents);
     const auto status=MH_Initialize();if(status!=MH_OK&&status!=MH_ERROR_ALREADY_INITIALIZED){spdlog::error("Restraint hook init failed {}",int(status));return;}
     struct Hook{void* address;void* replacement;void** original;};

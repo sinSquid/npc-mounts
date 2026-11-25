@@ -70,7 +70,22 @@ int main(){
  RE::ButtonEvent customJump("Jump",57),customRelease("Jump",57,true);
  ridden=true;config.dismountKey=57;head=&customJump;send(head);assert(!head&&dismountHold.pressed&&jumpRequests==1);
  head=&customRelease;send(head);assert(!head&&!dismountHold.pressed&&jumpRequests==1);config.dismountKey=0;
+ config.dismountKey=30;head=&turnL;send(head);assert(!head&&dismountHold.pressed&&!RideDrive::left);
+ head=&turnLUp;send(head);assert(!head&&!dismountHold.pressed&&!RideDrive::left);config.dismountKey=0;
+ // A consumed dismount press must also consume its release after dismount.
+ config.dismountKey=30;head=&turnL;send(head);assert(!head&&dismountHold.pressed);
+ ridden=false;dismountHold.Release();turnL.held=true;head=&turnL;send(head);assert(!head);turnL.held=false;head=&turnLUp;send(head);assert(!head&&!suppressedButtons.contains(30));
+ head=&turnL;send(head);assert(head==&turnL);
+ ridden=true;config.dismountKey=0;
  RE::UI::GetSingleton()->paused=true;head=&customJump;send(head);assert(head==&customJump&&jumpRequests==1);
+ for(bool menu:{true,false}){
+  RE::UI::GetSingleton()->paused=false;ridden=true;
+  const auto before=jumpRequests;head=&customJump;send(head);assert(!head&&jumpRequests==before+1&&suppressedButtons.contains(57));
+  RE::UI::GetSingleton()->paused=menu;ridden=menu;
+  customJump.held=true;head=&customJump;send(head);assert(!head);customJump.held=false;
+  head=&customRelease;send(head);assert(!head&&!suppressedButtons.contains(57));
+  head=&customJump;send(head);assert(head==&customJump&&jumpRequests==before+1);
+ }
  std::puts("PASS: actual input filter consumes mounted jump press/release, one request, hold exit, Ctrl/Alt, backward, B, menu and unmounted pass-through.");
 }
 `;

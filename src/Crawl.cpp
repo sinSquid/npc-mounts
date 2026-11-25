@@ -15,7 +15,7 @@ struct Clip{float duration{};std::vector<Frame> frames;};
 std::array<Clip,clipCount> clips;
 std::array<std::array<char,64>,bones> names;
 std::array<std::int16_t,bones> parents;
-struct Graph{RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count{};std::array<unsigned,bones> map;};
+struct Graph{RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count{};std::array<unsigned,bones> map;unsigned requiredTracks=0;};
 struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
 struct ActorPose{
     const RE::NiAVObject* root{};std::vector<Graph> graphs;std::vector<GraphStamp> graphStamp;
@@ -26,6 +26,7 @@ std::unordered_map<RE::FormID,ActorPose> actors;
 std::unordered_map<const void*,RE::FormID> graphOwners;
 RE::NiPoint3 anchorPoint{0,0,0};
 unsigned anchorBone=0;
+std::vector<unsigned> overlayBones;
 struct Retry{const RE::NiAVObject* root{};float remaining=0;bool bound=false;};
 std::unordered_map<RE::FormID,Retry> retries;
 std::mutex mutex;
@@ -35,19 +36,30 @@ void Reindex(){
     graphOwners.clear();for(const auto& [id,actor]:actors)for(const auto& graph:actor.graphs)graphOwners[&graph.graph->characterInstance]=id;
 }
 
+void BlendRotation(const float (&a)[4],const float (&b)[4],float t,float (&out)[4]){
+    float dot=0,norm=0;
+    for(unsigned j=0;j<4;++j)dot+=a[j]*b[j];
+    for(unsigned j=0;j<4;++j){
+        out[j]=a[j]+t*((dot<0?-b[j]:b[j])-a[j]);
+        norm+=out[j]*out[j];
+    }
+    const float length=std::sqrt(norm);
+    for(float& v:out)v/=length;
+}
 void Blend(const Frame& a,const Frame& b,float t,Frame& out){
     for(unsigned i=0;i<bones;++i){
-        float dot=0,norm=0;for(unsigned j=0;j<4;++j)dot+=a[i].q[j]*b[i].q[j];
         for(unsigned j=0;j<4;++j){
             out[i].t[j]=a[i].t[j]+t*(b[i].t[j]-a[i].t[j]);
             out[i].s[j]=a[i].s[j]+t*(b[i].s[j]-a[i].s[j]);
-            out[i].q[j]=a[i].q[j]+t*((dot<0?-b[i].q[j]:b[i].q[j])-a[i].q[j]);norm+=out[i].q[j]*out[i].q[j];
         }
-        for(float& v:out[i].q)v/=std::sqrt(norm);
+        BlendRotation(a[i].q,b[i].q,t,out[i].q);
     }
 }
+float FramePosition(const Clip& clip,float time){
+    return std::fmod(std::max(time,0.f),clip.duration)/clip.duration*(clip.frames.size()-1);
+}
 void Sample(const Clip& clip,float time,Frame& out){
-    const float f=std::fmod(std::max(time,0.f),clip.duration)/clip.duration*(clip.frames.size()-1);
+    const float f=FramePosition(clip,time);
     const auto a=static_cast<unsigned>(f),b=std::min(a+1,static_cast<unsigned>(clip.frames.size()-1));
     Blend(clip.frames[a],clip.frames[b],f-a,out);
 }
@@ -92,7 +104,7 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
             track.dataOffset<16+header.numTracks*16||track.dataOffset>header.numBytes||
             track.numData*sizeof(Pose)>header.numBytes-track.dataOffset){reject(3);return;}
         auto* data=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
-        if(std::any_of(binding.map.begin(),binding.map.end(),[&](unsigned index){return index!=std::numeric_limits<unsigned>::max()&&index>=static_cast<unsigned>(track.numData);})){reject(4);return;}
+        if(binding.requiredTracks==0||binding.requiredTracks>static_cast<unsigned>(track.numData)){reject(4);return;}
         for(unsigned i=0;i<bones;++i)if(binding.map[i]!=std::numeric_limits<unsigned>::max()){
             auto* destination=reinterpret_cast<Pose*>(data+binding.map[i]*sizeof(Pose));
             if(actor.bound)std::memcpy(destination->q,actor.pose[i].q,sizeof(destination->q));
@@ -126,6 +138,8 @@ bool Install(const char* path){
     if(file.peek()!=EOF)return false;
     unsigned spine=0;while(spine<bones&&std::string_view(names[spine].data())!="NPC Spine2 [Spn2]")++spine;
     if(spine==bones)return false;
+    overlayBones.clear();
+    for(unsigned i=0;i<bones;++i)if(OverlayBone(names[i].data()))overlayBones.push_back(i);
     anchorBone=spine;
     const auto rest=PosePoint(clips[0].frames.front(),parents,static_cast<int>(spine));anchorPoint={rest[0],rest[1],rest[2]};
     loaded=true;
@@ -169,7 +183,7 @@ bool BindMode(RE::Actor* actor,bool publish,bool bound){
             const auto wanted=bound?OverlayName(names[i].data()):std::string(Canonical(names[i].data()));bool found=false;
             for(unsigned j=0;j<binding.count;++j)if(skeleton->bones[j].name.c_str()){
                 const auto actual=bound?OverlayName(skeleton->bones[j].name.c_str()):std::string(Canonical(skeleton->bones[j].name.c_str()));
-                if(actual==wanted){binding.map[i]=j;found=true;++mapped;break;}
+                if(actual==wanted){binding.map[i]=j;binding.requiredTracks=std::max(binding.requiredTracks,j+1);found=true;++mapped;break;}
             }
             if(!found){valid=false;break;}
             if(!bound){const int expected=parents[i]<0?-1:static_cast<int>(binding.map[parents[i]]);if(skeleton->parentIndices[binding.map[i]]!=expected)valid=false;}
@@ -180,7 +194,7 @@ bool BindMode(RE::Actor* actor,bool publish,bool bound){
     if(result.graphs.empty()){
         std::scoped_lock lock(mutex);auto& retry=retries[actor->GetFormID()];
         if(retry.root!=result.root)spdlog::warn("Crawl skeleton incompatible ref={:08X}",actor->GetFormID());
-        retry={result.root,1.f,bound};actors.erase(actor->GetFormID());Reindex();return false;
+        retry={result.root,1.f,bound};if(actors.erase(actor->GetFormID()))Reindex();return false;
     }
     std::scoped_lock lock(mutex);
     const auto old=actors.find(actor->GetFormID());
@@ -239,7 +253,16 @@ void UpdateBound(RE::Actor* actor,float delta){
     }
     if(bind&&!BindBound(actor))return;
     std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[boundClip].duration);
-    Frame next;Sample(clips[boundClip],state.time,next);Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
+    const auto& clip=clips[boundClip];
+    const float position=FramePosition(clip,state.time);
+    const auto first=static_cast<unsigned>(position);
+    const auto second=std::min(first+1,static_cast<unsigned>(clip.frames.size()-1));
+    const float blend=1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f));
+    for(const auto i:overlayBones){
+        float sampled[4];
+        BlendRotation(clip.frames[first][i].q,clip.frames[second][i].q,position-first,sampled);
+        BlendRotation(state.pose[i].q,sampled,blend,state.pose[i].q);
+    }
 }
 bool StaticAnchor(RE::Actor* actor,RE::NiPoint3& point){
     if(!actor)return false;

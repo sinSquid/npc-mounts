@@ -193,9 +193,15 @@ def is_additive(prefix,filename):
 # OAR aliases; do not recreate the ten obsolete disabled NPC directories.
 folder=OAR/'rider';folder.mkdir(exist_ok=True)
 (folder/'config.json').write_text(json.dumps(dict(name='rider',disabled=False,priority=2147483645,interruptible=True,conditions=[dict(condition='IsInFaction',requiredVersion='1.0.0',Faction=form(0x801))]),indent=2))
+alias_sources={}
 for filename in aliases:
  for prefix in ['', 'female/']:
   target=folder/(prefix+filename);target.parent.mkdir(exist_ok=True)
-  target.write_bytes((neutralFile if is_additive(prefix,filename) else riderJumps.get(filename,riderFile)).read_bytes())
-(R/'reports/animations.json').write_text(json.dumps(dict(mapping=mapping,sourceMode='human-crawl' if args.crawl_dir else 'horse-retarget',crawlSources=crawlFiles if args.crawl_dir else None,stableBackAnchor=bp[S.bones.index('NPC Spine2 [Spn2]')].tolist(),clips=reports,aliases=sorted(aliases),additiveOverlaysNeutralized=[k for k,v in aliasBindings.items() if v==1],riderJumpAnnotationsPreserved=True,bakedRiderSeat=seat.tolist(),humanIdleCameraPreserved=True,gameTested=False),indent=2))
+  source=neutralFile if is_additive(prefix,filename) else riderJumps.get(filename,riderFile)
+  if source not in alias_sources:
+   alias_sources[source]=source.read_bytes()
+  target.write_bytes(alias_sources[source])
+report_path=R/'reports/animations.json'
+report_path.parent.mkdir(parents=True,exist_ok=True)
+report_path.write_text(json.dumps(dict(mapping=mapping,sourceMode='human-crawl' if args.crawl_dir else 'horse-retarget',crawlSources=crawlFiles if args.crawl_dir else None,stableBackAnchor=bp[S.bones.index('NPC Spine2 [Spn2]')].tolist(),clips=reports,aliases=sorted(aliases),additiveOverlaysNeutralized=[k for k,v in aliasBindings.items() if v==1],riderJumpAnnotationsPreserved=True,bakedRiderSeat=seat.tolist(),humanIdleCameraPreserved=True,gameTested=False),indent=2))
 print('Built',len(reports),'validated clips and',len(aliases)*2,'rider animation aliases')

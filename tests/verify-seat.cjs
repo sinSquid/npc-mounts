@@ -50,7 +50,7 @@ std::array<std::array<Pose,bones>,frames> animation;
 std::array<std::array<Pose,bones>,riderFrames> riderAnimation;
 std::array<std::array<char,64>,bones> names;std::array<std::int16_t,bones> parents;
 RE::NiPoint3 riderCenter;float riderDuration=0,riderTime=0,riderSway=0,riderBlend=0;int riderGait=0;
-struct GraphBinding{std::shared_ptr<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;};
+struct GraphBinding{std::shared_ptr<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;unsigned requiredTracks=0;};
 struct GraphStamp{const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
 std::mutex mutex;std::vector<GraphBinding> graphs;std::vector<GraphStamp> graphStamp;
 const RE::BSAnimationGraphManager* boundManager=nullptr;const RE::NiAVObject* boundRoot=nullptr;
@@ -83,7 +83,7 @@ int main(int argc,char** argv){
  const int headerBytes=16+3*16,bytes=headerBytes+99*sizeof(Pose);std::vector<std::byte> buffer(bytes);
  auto* tracks=reinterpret_cast<RE::hkbGeneratorOutput::Tracks*>(buffer.data());
  tracks->masterHeader={bytes,3,{}};auto& h=tracks->trackHeaders[2];h={99,99,headerBytes,48,1,0,1,0};
- RE::hkbGeneratorOutput output{tracks};auto graph=std::make_shared<RE::BShkbAnimationGraph>();GraphBinding first{graph,99};for(unsigned i=0;i<bones;++i)first.map[i]=i;first.parents.assign(parents.begin(),parents.end());first.fullRoot=true;graphs.push_back(first);RE::hkbContext context{&graph->characterInstance};
+ RE::hkbGeneratorOutput output{tracks};auto graph=std::make_shared<RE::BShkbAnimationGraph>();GraphBinding first{graph,99};for(unsigned i=0;i<bones;++i)first.map[i]=i;first.parents.assign(parents.begin(),parents.end());first.requiredTracks=bones;first.fullRoot=true;graphs.push_back(first);RE::hkbContext context{&graph->characterInstance};
  for(float npc:{.5f,1.f,1.24f,2.f,3.f})for(float player:{.65f,1.f,1.5f})for(float phase:{-1.f,0.f,.1f,.3f,.5f,.9f,1.f}){
   std::memcpy(buffer.data()+headerBytes,animation[0].data(),99*sizeof(Pose));
   target={3.75858f*npc/player,-17.65506f*npc/player,53.74204f*npc/player};exitTarget=target;progress=phase;wrote=false;finished=false;
@@ -200,8 +200,8 @@ int main(int argc,char** argv){
  RE::NiMatrix3 matrix;matrix.entry[0][0]=2;matrix.entry[0][1]=.3f;matrix.entry[1][0]=.7f;matrix.entry[1][1]=3;matrix.entry[2][2]=.5f;
  RE::NiMatrix3 inverse;assert(Inverse(matrix,inverse));auto identity=matrix*inverse;for(int i=0;i<3;i++)for(int j=0;j<3;j++)assert(std::abs(identity.entry[i][j]-(i==j))<1e-5);
  // Mapped bone beyond the shortened output must be rejected before any write.
- tracks->masterHeader={bytes,3,{}};h={99,99,headerBytes,48,1,0,1,0};graphs[0].count=126;graphs[0].parents.resize(126,0);graphs[0].map[6]=100;
- {auto before=buffer;wrote=false;GeneratePose(nullptr,context,nullptr,output,0);assert(!wrote&&before==buffer);}graphs[0].map[6]=6;
+ tracks->masterHeader={bytes,3,{}};h={99,99,headerBytes,48,1,0,1,0};graphs[0].count=126;graphs[0].parents.resize(126,0);graphs[0].map[6]=99;graphs[0].requiredTracks=100;
+ {auto before=buffer;wrote=false;GeneratePose(nullptr,context,nullptr,output,0);assert(!wrote&&before==buffer);}graphs[0].map[6]=6;graphs[0].requiredTracks=bones;
  // Parent-chain calculation agrees with the full-skeleton reference.
  for(const auto& frame:riderAnimation){std::vector<Pose> poses(frame.begin(),frame.end());std::vector<std::int16_t> hierarchy(parents.begin(),parents.end());std::array<RE::NiPoint3,bones> points;std::array<RE::NiMatrix3,bones> bases;World(frame.data(),points,bases);
   for(int bone:{3,4,5,12}){RE::NiPoint3 point;RE::NiMatrix3 basis;assert(WorldBone(poses,hierarchy,bone,point,basis));near(point,points[bone]);for(int i=0;i<3;++i)for(int j=0;j<3;++j)assert(std::abs(basis.entry[i][j]-bases[bone].entry[i][j])<.0001f);}}

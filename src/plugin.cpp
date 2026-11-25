@@ -40,6 +40,7 @@ std::unordered_map<RE::FormID, State> targets;
 RE::TESFaction* mountFaction{};
 RE::TESFaction* riderFaction{};
 RE::SpellItem* convertSpell{};
+bool gameplayInitialized=false;
 RE::SpellItem* restoreSpell{};
 RE::EffectSetting* convertEffect{};
 RE::EffectSetting* legacyConvertEffect{};
@@ -211,24 +212,39 @@ void ResetPose(RE::Actor* actor,State& state){
     actor->AddToFaction(mountFaction,0);state.animation=0;
     StopMotion(actor);actor->NotifyAnimationGraph("IdleForceDefaultState");
 }
-RE::NiPoint3 DismountOffset(RE::Actor* player,float angle)
+RE::NiPoint3 DismountOffset(RE::Actor* player,RE::NiPoint3 horizontal)
 {
     auto* cc=player->GetCharController();
     auto* world=cc?cc->GetHavokWorld():nullptr;
-    if(!world)return {};
+    if(!world||(horizontal.x==0.f&&horizontal.y==0.f))return {};
     const auto position=player->GetPosition();
-    for (float side : {1.f, -1.f}) {
-        auto candidate = position + RE::NiPoint3{std::cos(angle) * transitionSideOffset * side, -std::sin(angle) * transitionSideOffset * side, 0.f};
-        RE::bhkPickData floor{};
-        if (!Ray(world, candidate + RE::NiPoint3{0.f,0.f,96.f}, candidate - RE::NiPoint3{0.f,0.f,96.f}, floor)) continue;
-        if (floor.rayOutput.normal.Dot3(RE::hkVector4(0.f,0.f,1.f,0.f)) < 0.6f) continue;
-        candidate.z += 96.f - 192.f * floor.rayOutput.hitFraction;
-        if (std::abs(candidate.z - position.z) > 64.f) continue;
-        RE::bhkPickData wall{};
-        if (Ray(world, position + RE::NiPoint3{0.f,0.f,48.f}, candidate + RE::NiPoint3{0.f,0.f,48.f}, wall)) continue;
-        return candidate-position+RE::NiPoint3{0.f,0.f,2.f};
-    }
-    return {};
+    horizontal.z=0.f;
+    auto candidate=position+horizontal;
+    RE::bhkPickData floor{};
+    if(!Ray(world,candidate+RE::NiPoint3{0,0,96},candidate-RE::NiPoint3{0,0,96},floor)||
+        !(floor.rayOutput.normal.Dot3(RE::hkVector4(0,0,1,0))>=.6f))return {};
+    const float rise=96.f-192.f*floor.rayOutput.hitFraction;
+    if(!std::isfinite(rise)||std::abs(rise)>64.f)return {};
+    candidate.z+=rise+2.f;
+    const float height=player->GetHeight();
+    if(!std::isfinite(height)||height<=0.f)return {};
+    const auto shoulderWidth=height*.15f;
+    const float yaw=player->GetAngleZ();
+    const RE::NiPoint3 shoulder{std::cos(yaw)*shoulderWidth,-std::sin(yaw)*shoulderWidth,0};
+    const RE::NiPoint3 chest{0,0,height*.55f}, head{0,0,height};
+    const auto blocked=[&](const RE::NiPoint3& from,const RE::NiPoint3& to){
+        RE::bhkPickData hit{};return Ray(world,from,to,hit);
+    };
+    if(blocked(position+chest,candidate+chest)||blocked(position+head,candidate+head)||
+        blocked(candidate,candidate+head)||blocked(candidate-shoulder,candidate-shoulder+head)||
+        blocked(candidate+shoulder,candidate+shoulder+head)||blocked(candidate+chest-shoulder,candidate+chest+shoulder))return {};
+    return candidate-position;
+}
+RE::NiPoint3 ChooseDismountOffset(RE::Actor* player,float yaw){
+    const RE::NiPoint3 right{std::cos(yaw)*transitionSideOffset,-std::sin(yaw)*transitionSideOffset,0};
+    auto offset=DismountOffset(player,right);
+    if(offset.x!=0.f||offset.y!=0.f)return offset;
+    return DismountOffset(player,{-right.x,-right.y,0});
 }
 bool Dismount(bool emergency = false, bool = true)
 {
@@ -254,7 +270,7 @@ bool Dismount(bool emergency = false, bool = true)
         return true;
     }
     auto position = player->GetPosition();
-    if (!emergency) position=position+(downActive?downOffset:DismountOffset(player,mount->GetAngleZ()));
+    if (!emergency) position=position+(downActive?DismountOffset(player,downOffset):ChooseDismountOffset(player,mount->GetAngleZ()));
     player->RemoveFromFaction(riderFaction);
     StopMotion(player);
     player->NotifyAnimationGraph("IdleForceDefaultState");
@@ -276,9 +292,11 @@ bool Dismount(bool emergency = false, bool = true)
 }
 void BeginDismount() {
     auto mount=ridden.get();if(!mount||downActive||upActive)return;
+    auto* player=RE::PlayerCharacter::GetSingleton();
+    downOriginalFlags=player->GetActorRuntimeData().boolFlags.underlying()&static_cast<std::uint32_t>(downFlags);
     downActive=true;transitionTime=0.f;dismountHold.Release();RideDrive::ResetInput();
-    downOffset=DismountOffset(RE::PlayerCharacter::GetSingleton(),mount->GetAngleZ());
-    Seat::Entering(false);Seat::Update(RE::PlayerCharacter::GetSingleton(),mount.get(),config,0.f,downOffset);
+    downOffset=ChooseDismountOffset(player,mount->GetAngleZ());
+    Seat::Entering(false);Seat::Update(player,mount.get(),config,0.f,downOffset);
 }
 bool SeatOutputTimedOut(float delta){
     const auto current=Seat::WriteSequence();
@@ -803,6 +821,20 @@ struct RideInput final : RE::BSTEventSink<RE::InputEvent*> {
         while (auto* event = *link) {
             if (auto* button = event->AsButtonEvent()) {
                 const auto* actions=RE::UserEvents::GetSingleton();
+                const bool downKey=config.dismountKey==0 ? button->QUserEvent()==RE::UserEvents::GetSingleton()->activate :
+                    button->GetDevice()==RE::INPUT_DEVICE::kKeyboard && button->GetIDCode()==static_cast<unsigned>(config.dismountKey);
+                if(ridden&&gameplay&&downKey){
+                    const auto key=(std::uint64_t(button->GetDevice())<<32)|button->GetIDCode();
+                    if(button->IsDown()){
+                        suppressedButtons.insert(key);
+                        if(!downActive&&!upActive)dismountHold.Press();
+                    }
+                    if(button->IsUp()){
+                        dismountHold.Release();
+                        suppressedButtons.erase(key);
+                    }
+                    *link=event->next;continue;
+                }
                 const bool left=button->QUserEvent()==actions->strafeLeft;
                 const bool right=button->QUserEvent()==actions->strafeRight;
                 if((left||right)&&ridden&&gameplay){
@@ -812,25 +844,19 @@ struct RideInput final : RE::BSTEventSink<RE::InputEvent*> {
                     if(button->IsUp())suppressedButtons.erase(key);else suppressedButtons.insert(key);
                     *link=event->next;continue;
                 }
-                const bool downKey=config.dismountKey==0 ? button->QUserEvent()==RE::UserEvents::GetSingleton()->activate :
-                    button->GetDevice()==RE::INPUT_DEVICE::kKeyboard && button->GetIDCode()==static_cast<unsigned>(config.dismountKey);
-                if(ridden&&gameplay&&downKey){
-                    if(button->IsDown()&&!downActive&&!upActive)dismountHold.Press();
-                    if(button->IsUp()){
-                        dismountHold.Release();
-                        suppressedButtons.erase((std::uint64_t(button->GetDevice())<<32)|button->GetIDCode());
-                    }
-                    *link=event->next;continue;
-                }
                 if(ridden&&gameplay&&button->QUserEvent()==actions->jump){
                     // One owner: issue our physical request, then remove press,
                     // hold and release before native handlers/later input sinks.
+                    const auto key=(std::uint64_t(button->GetDevice())<<32)|button->GetIDCode();
+                    if(button->IsDown())suppressedButtons.insert(key);
+                    if(button->IsUp())suppressedButtons.erase(key);
                     JumpInput(nullptr,event);
                     *link=event->next;continue;
                 }
                 const auto key = (std::uint64_t(button->GetDevice()) << 32) | button->GetIDCode();
                 bool block = false;
                 if (button->IsUp()) block = suppressedButtons.erase(key) != 0;
+                else if (!button->IsDown() && suppressedButtons.contains(key)) block=true;
                 else if (ridden && gameplay && (BlockRideButton(button) ||
                     ((downActive||upActive) && (button->QUserEvent()==RE::UserEvents::GetSingleton()->forward || button->QUserEvent()==RE::UserEvents::GetSingleton()->back ||
                     button->QUserEvent()==RE::UserEvents::GetSingleton()->strafeLeft || button->QUserEvent()==RE::UserEvents::GetSingleton()->strafeRight || button->QUserEvent()==RE::UserEvents::GetSingleton()->jump)))) {
@@ -890,14 +916,14 @@ struct Events final : RE::BSTEventSink<RE::TESMagicEffectApplyEvent>, RE::BSTEve
                 Convert(target.get());
             });
         } else if (event->magicEffect == restoreEffect->GetFormID()) {
-            auto* selected = Crosshair();
-            auto handle = selected ? selected->GetHandle() : RE::ActorHandle{};
-            SKSE::GetTaskInterface()->AddTask([handle,epoch, hadTarget = selected != nullptr] {
+            auto* pick=RE::CrosshairPickData::GetSingleton();
+            auto handle=pick?pick->GetActiveTarget():RE::ObjectRefHandle{};
+            SKSE::GetTaskInterface()->AddTask([handle,epoch, hadTarget = static_cast<bool>(handle)] {
                 if(Extras::Session()!=epoch)return;
                 Diagnostics::Scope operation(0);
                 Diagnostics::Trace("Restore spell executing hadTarget={} ridden={}",hadTarget,static_cast<bool>(ridden));
                 if (auto mount = ridden.get()) Restore(mount.get());
-                else if (auto target = handle.get()) Restore(target.get());
+                else if (auto target = handle.get()) Restore(target->As<RE::Actor>());
                 else if (!hadTarget) RestoreAll();
             });
         }
@@ -1005,6 +1031,7 @@ void Message(SKSE::MessagingInterface::Message* message)
 {
     Diagnostics::Trace("SKSE message type={}",message->type);
     if (message->type == SKSE::MessagingInterface::kDataLoaded) {
+        if(gameplayInitialized)return;
         auto* data = RE::TESDataHandler::GetSingleton();
         Settings::Initialize();config=Settings::Get();Diagnostics::SetLevel(config.logLevel);Settings::InstallMenu();
         Diagnostics::Trace("Initial setting LogLevel={}",config.logLevel);
@@ -1013,7 +1040,6 @@ void Message(SKSE::MessagingInterface::Message* message)
         MovementCompat::Initialize();
         if(!Seat::Install())spdlog::error("Seat/dismount animation data missing or invalid; mounting disabled");
         if(!Crawl::Install())spdlog::error("Crawl motion data missing or invalid; conversion disabled");
-        if(!PoseOutput::Install()){spdlog::error("Pose publication hook unavailable; NPCMounts gameplay hooks not installed");return;}
         mountFaction = data->LookupForm<RE::TESFaction>(0x800, plugin);
         riderFaction = data->LookupForm<RE::TESFaction>(0x801, plugin);
         WaterRide::ability=data->LookupForm<RE::SpellItem>(0x825,plugin);
@@ -1023,6 +1049,7 @@ void Message(SKSE::MessagingInterface::Message* message)
         convertSpell = data->LookupForm<RE::SpellItem>(0x804, plugin);
         restoreSpell = data->LookupForm<RE::SpellItem>(0x805, plugin);
         if (!mountFaction || !riderFaction || !convertEffect || !restoreEffect || !convertSpell || !restoreSpell) { spdlog::error("NPCMounts.esp missing/incomplete; no hooks installed"); return; }
+        if(!PoseOutput::Install()){spdlog::error("Pose publication hook unavailable; NPCMounts gameplay hooks not installed");return;}
         Extras::Initialize();
         Travel::Initialize();
         RideCollision::Install();
@@ -1048,11 +1075,12 @@ void Message(SKSE::MessagingInterface::Message* message)
         source->AddEventSink<RE::TESFormDeleteEvent>(&events);
         source->AddEventSink<RE::TESSpellCastEvent>(&events);
         RegisterRideInput();
+        gameplayInitialized=true;
         spdlog::info("Ready 0.4.4: equipment restore, capture, human anchor and transition poses");
         spdlog::info("Runtime Y4.19 candidate: water-state gait speed uses horizontal output when linear velocity is zero; game validation pending");
         spdlog::info("Build compiled {} {}: game validation pending",__DATE__,__TIME__);
     }
-    if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && convertSpell) {
+    if ((message->type == SKSE::MessagingInterface::kPostLoadGame || message->type == SKSE::MessagingInterface::kNewGame) && gameplayInitialized) {
         if(message->type==SKSE::MessagingInterface::kPostLoadGame&&!message->data)return;
         auto* player = RE::PlayerCharacter::GetSingleton();
         MigrateKnownSpells(player);

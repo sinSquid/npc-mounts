@@ -22,7 +22,7 @@ float riderDuration=0.f,riderTime=0.f,riderSway=0.f,riderBlend=0.f;
 int riderGait=0;
 std::mutex mutex;
 PoseAudit audit;
-struct GraphBinding {RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;};
+struct GraphBinding {RE::BSTSmartPointer<RE::BShkbAnimationGraph> graph;unsigned count;std::array<unsigned,bones> map;std::vector<std::int16_t> parents;bool fullRoot=false;unsigned requiredTracks=0;};
 struct GraphStamp {const RE::BShkbAnimationGraph* graph;const void* skeleton;std::size_t bones;bool operator==(const GraphStamp&)const=default;};
 std::vector<GraphBinding> graphs;
 std::vector<GraphStamp> graphStamp;
@@ -128,7 +128,7 @@ void GeneratePose(RE::hkbGenerator* self,const RE::hkbContext& context,const RE:
     if(track.numData<bones || track.numData>binding->count || track.capacity<track.numData || track.elementSizeBytes!=sizeof(Pose) ||
         static_cast<int>(track.flags)!=0 || static_cast<int>(track.type)!=1 || track.onFraction<=0 ||
         track.dataOffset<begin || track.dataOffset>header.numBytes || track.numData*sizeof(Pose)>header.numBytes-track.dataOffset){audit.Reject(3);return;}
-    if(std::any_of(binding->map.begin(),binding->map.end(),[&](unsigned index){return index!=std::numeric_limits<unsigned>::max()&&index>=static_cast<unsigned>(track.numData);})){audit.Reject(4);return;}
+    if(binding->requiredTracks==0||binding->requiredTracks>static_cast<unsigned>(track.numData)){audit.Reject(4);return;}
     auto* outputPose=reinterpret_cast<std::byte*>(output.tracks)+track.dataOffset;
     auto* native=reinterpret_cast<Pose*>(outputPose);
     thread_local std::vector<Pose> pose;pose.resize(track.numData);std::memcpy(pose.data(),outputPose,track.numData*sizeof(Pose));
@@ -247,6 +247,8 @@ std::vector<GraphBinding> Collect(const RE::BSAnimationGraphManager& manager){
                 else if(parents[i]>=4&&skeleton->parentIndices[binding.map[i]]!=static_cast<int>(binding.map[parents[i]]))match=false;
             }if(!match)continue;
         }
+        for(const auto index:binding.map)if(index!=std::numeric_limits<unsigned>::max())
+            binding.requiredTracks=std::max(binding.requiredTracks,index+1);
         result.push_back(std::move(binding));spdlog::info("Seat bind accepted: {} bones, mode={}",skeleton->bones.size(),exact?"full":"mapped-body");
     }
     return result;
