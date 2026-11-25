@@ -7,6 +7,8 @@ fs.writeFileSync(path.join(root,'build/binding-release-regression.cpp'),`
 #include <cstdio>
 #include <cstdint>
 #include <mutex>
+#include <vector>
+#include <string>
 #include <unordered_map>
 namespace RE {
 using FormID=unsigned;struct NiPoint3{};enum class ACTOR_LIFE_STATE {kAlive=0,kDead=2,kRestrained=6};enum class ITEM_REMOVE_REASON{kRemove};
@@ -36,12 +38,14 @@ constexpr auto flagsMask=static_cast<RE::Actor::BOOL_FLAGS>((1u<<27)|(1u<<20)|(1
 ${take('struct Binding {')};${take('enum class Phase ')};${take('struct Tether {')};
 std::mutex mutex;std::unordered_map<unsigned,Binding> bindings;std::unordered_map<unsigned,Tether> tethers;
 auto* cuffs=&RE::cuffArmor;bool hooksReady=true,leashAvailable=true;unsigned deleted=0,freeze=0;
+std::vector<std::string> notices;void Notify(const char* message){notices.emplace_back(message);}
 void DeletePost(unsigned id){if(id)++deleted;}void StopTether(RE::Actor* a){tethers.at(a->id).wanted=false;}
 void Freeze(RE::Actor*,const Binding&){++freeze;}
 void StartTether(RE::Actor*,bool){}
 bool originalHostile(RE::Actor* a,RE::Actor*){return a->hostile;}bool originalCombat(RE::Actor*,RE::Actor*,RE::CombatGroup*){return true;}
 bool displaced=false,ready=true;bool Ready(RE::Actor*){return ready;}bool Displaced(RE::Actor*,const Binding&){return displaced;}
 ${take('bool Find(')}${take('bool Pacified(')}${take('bool HostileHook(')}${take('bool CombatHook(')}${take('bool Busy(')}${take('bool HoldAnchor(')}${take('bool Release(')}${take('void Loaded(')}
+${take('void ReleaseWithNotice(')}
 int main(){RE::Actor a,b;b.id=2;Binding binding;binding.pacified=true;binding.ai=false;binding.life=0;binding.flags=1u<<20;binding.priorCuffs=2;binding.oldHands=4;
  a.data.boolFlags.value=unsigned(flagsMask)|(1u<<18);bindings[1]=binding;
  assert(!HostileHook(&a,&b)&&!HostileHook(&b,&a)&&!CombatHook(&a,&b,nullptr));
@@ -61,6 +65,19 @@ int main(){RE::Actor a,b;b.id=2;Binding binding;binding.pacified=true;binding.ai
  auto unequipBefore=RE::ActorEquipManager::GetSingleton()->unequips;assert(!Release(&a)&&bindings.at(1).releaseRequested&&a.ai&&RE::ActorEquipManager::GetSingleton()->unequips==unequipBefore);ready=true;Loaded(&a);assert(!bindings.contains(1));
  tethers[1]={Phase::Active,true,1};assert(!Release(&a)&&!tethers.at(1).wanted);
  tethers[1].phase=Phase::Failed;assert(Release(&a)&&tethers.contains(1)); // B unblocks local restoration without falsely claiming rope cleanup
+ tethers.clear();
+ for(bool pacify:{false,true}){
+  binding.pacified=pacify;binding.releaseRequested=false;binding.notifyRelease=false;bindings[1]=binding;notices.clear();
+  ready=false;ReleaseWithNotice(&a,pacify);ReleaseWithNotice(&a,pacify);Loaded(&a);
+  assert(notices.size()==1&&notices[0]==(pacify?"正在解除捕获":"正在解除固定"));
+  ready=true;Loaded(&a);Release(&a);Loaded(&a);
+  assert(notices.size()==2&&notices[1]==(pacify?"已解除捕获并恢复原状态":"已解除固定"));
+  bindings[1]=binding;notices.clear();ReleaseWithNotice(&a,pacify);
+  assert(notices.size()==1&&notices[0]==(pacify?"已解除捕获并恢复原状态":"已解除固定"));
+ }
+ binding.pacified=false;bindings[1]=binding;notices.clear();tethers[1]={Phase::Active,true,2};
+ ReleaseWithNotice(&a,false);assert(notices.size()==1&&bindings.at(1).notifyRelease);
+ tethers[1].phase=Phase::Failed;Loaded(&a);Loaded(&a);assert(notices.size()==2&&notices[1]=="本地束缚已解除，绳索清理尚未确认");
  std::puts("PASS: actual C/D release, dynamic hostility restoration, original flags/AI/equipment, idempotence, deferred/dead load cleanup, late D load, B waits normally but not on terminal bridge failure.");
 }
 `);

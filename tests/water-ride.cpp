@@ -32,7 +32,7 @@ struct SerializationInterface {
 }
 namespace spdlog {inline void warn(const char*){}}
 #include "../src/WaterRide.h"
-namespace Crawl {bool Anchor(RE::Actor*,RE::NiPoint3& p,float){p={0,-18,45};return true;}}
+namespace Crawl {bool StaticAnchor(RE::Actor*,RE::NiPoint3& p){p={0,-18,45};return true;}}
 void Apply(RE::Actor& actor){actor.position.z=-WaterRide::Offset();WaterRide::Applied(&actor);}
 int main(){
  RE::SpellItem spell;WaterRide::ability=&spell;

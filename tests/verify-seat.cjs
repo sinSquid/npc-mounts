@@ -43,7 +43,7 @@ struct hkbGeneratorOutput{
  struct Tracks{Master masterHeader;Header trackHeaders[1];};Tracks* tracks;
 };
 }
-namespace Crawl{RE::NiPoint3 sample{4,-18,42};bool Anchor(RE::Actor*,RE::NiPoint3& p,float){p=sample;return true;}}
+namespace Crawl{RE::NiPoint3 sample{4,-18,42};bool StaticAnchor(RE::Actor*,RE::NiPoint3& p){p=sample;return true;}}
 constexpr unsigned bones=99,frames=31,riderFrames=13;
 struct Pose{float t[4],q[4],s[4];};
 std::array<std::array<Pose,bones>,frames> animation;

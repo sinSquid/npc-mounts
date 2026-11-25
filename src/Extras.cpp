@@ -18,6 +18,7 @@ struct Binding {
     std::uint32_t flags=0,life=0,priorCuffs=0;
     bool ai=true,pacified=false,releaseRequested=false;
     bool teammate=false,teammateSaved=false;
+    bool notifyRelease=false;
     RE::NiPoint3 position,angle;
 };
 enum class Phase {Checking,Applying,Reconciling,Active,Stopping,Failed};
@@ -27,6 +28,7 @@ struct Tether {
     bool pending=false,query=false;std::uint64_t born=0;
     bool anchor=false;
     bool anchorAfterDisconnect=false;
+    bool uncertainAnchor=false;
 };
 std::mutex mutex;
 std::unordered_map<RE::FormID,Binding> bindings;
@@ -83,13 +85,24 @@ bool Eligible(RE::Actor* actor,bool humanoid=true){
         !actor->IsInKillMove()&&actor->AsActorState()->GetSitSleepState()==RE::SIT_SLEEP_STATE::kNormal&&!actor->GetMount(nativeMount);
 }
 void DeletePost(RE::FormID id){if(auto* ref=RE::TESForm::LookupByID<RE::TESObjectREFR>(id)){ref->Disable();ref->SetDelete(true);}}
+void ReleaseWithNotice(RE::Actor* actor,bool pacify){
+    bool alreadyRequested;
+    {
+        std::scoped_lock lock(mutex);
+        auto& binding=bindings.at(actor->GetFormID());
+        alreadyRequested=binding.notifyRelease;
+        binding.notifyRelease=true;
+    }
+    if(!Release(actor)&&!alreadyRequested)Notify(pacify?"正在解除捕获":"正在解除固定");
+}
 bool Bind(RE::Actor* actor,bool pacify){
     Diagnostics::Snapshot(actor,pacify?"Capture requested":"Anchor requested");
     Diagnostics::Trace("Bind converted={} bound={} busy={} ridden={}",Mounts::Converted(actor),Bound(actor),Busy(actor),Mounts::Riding(actor));
     if(!actor){Notify("未选择有效NPC目标");return false;}
     Binding existing;if(Find(actor->GetFormID(),existing)){
         if(existing.pacified!=pacify){Notify(pacify?"目标已处于固定状态，请先解除固定":"目标已处于捕获状态，请使用人魅-捕获或统一解除");return false;}
-        Release(actor);Notify(pacify?"已解除捕获并恢复原状态":"已解除固定");return true;
+        ReleaseWithNotice(actor,pacify);
+        return true;
     }
     const bool converted=Mounts::Converted(actor);
     if(!pacify&&!converted){Notify("人魅-固定NPC只对已转换的坐骑NPC有效");return false;}
@@ -132,17 +145,18 @@ bool Bind(RE::Actor* actor,bool pacify){
 
 struct Result final:RE::BSScript::IStackCallbackFunctor {
     std::function<void(bool)> done;
+    std::function<void()> invalid;
     bool holder;
     Diagnostics::Context context=Diagnostics::current;
     std::uint64_t request=++Diagnostics::sequence;
     const char* function;bool trace; // Call sites use static function-name literals.
     explicit Result(std::function<void(bool)> fn,bool owner,const char* name,bool record):done(std::move(fn)),holder(owner),function(name),trace(record){}
     void operator()(RE::BSScript::Variable result)override{
-        // A missing/invalid Boolean result is not a successful disconnect.
-        // Leave the request pending for the bounded watchdog instead.
         Diagnostics::Scope operation(context);
         if(holder ? (!result.IsObject()&&!result.IsNoneObject()) : !result.IsBool()){
-            Diagnostics::Trace("VM callback request={} function={} invalid-type; existing watchdog retained",request,function);return;
+            Diagnostics::Trace("VM callback request={} function={} invalid-type",request,function);
+            if(invalid)SKSE::GetTaskInterface()->AddTask([fn=invalid,context=context]{Diagnostics::Scope operation(context);fn();});
+            return;
         }
         auto fn=done;const bool value=holder ? (result.IsObject()&&result.Unpack<RE::Actor*>()==RE::PlayerCharacter::GetSingleton()) : result.IsBool()&&result.GetBool();
         if(trace)Diagnostics::Trace("VM callback request={} function={} value={}",request,function,value);
@@ -150,10 +164,11 @@ struct Result final:RE::BSScript::IStackCallbackFunctor {
     }
     void SetObject(const RE::BSTSmartPointer<RE::BSScript::Object>&)override{}
 };
-template<class... Args> bool Call(const char* function,std::function<void(bool)> done,Args... args){
+template<class... Args> bool Dispatch(const char* function,std::function<void(bool)> done,std::function<void()> invalid,Args... args){
     const bool query=std::string_view(function)=="IsLeashed"||std::string_view(function)=="GetLeashHolder";
     const bool trace=!query||Diagnostics::Sample(4,2000);
     auto* callback=new Result(std::move(done),std::string_view(function)=="GetLeashHolder",function,trace);
+    callback->invalid=std::move(invalid);
     const auto request=callback->request;
     RE::BSTSmartPointer<RE::BSScript::IStackCallbackFunctor> result{callback};
     if(trace)Diagnostics::Trace("VM request={} function={}",request,function);
@@ -161,25 +176,49 @@ template<class... Args> bool Call(const char* function,std::function<void(bool)>
     if(trace||!dispatched)Diagnostics::Trace("VM dispatch request={} function={} accepted={}",request,function,dispatched);
     return dispatched;
 }
+template<class... Args> bool Call(const char* function,std::function<void(bool)> done,Args... args){
+    return Dispatch(function,std::move(done),{},std::move(args)...);
+}
 bool Current(RE::FormID id,std::uint64_t token){const auto it=tethers.find(id);return it!=tethers.end()&&it->second.token==token;}
 void FailTether(Tether& tether){
     if(tether.phase==Phase::Failed)return;
     tether.phase=Phase::Failed;tether.wanted=false;
     Notify("牵引接口未完成，已停止自动重试；人魅-解除坐骑化与束缚可还原本地状态，绳索清理尚未确认");
 }
+template<class... Args> bool Mutate(RE::FormID id,std::uint64_t token,const char* function,std::function<void(bool)> done,Args... args){
+    auto invalid=[id,token]{
+        if(!Current(id,token))return;
+        auto& t=tethers.at(id);
+        t.pending=false;t.elapsed=0;t.retry=0;
+        t.uncertainAnchor=t.anchor;t.wanted=false;
+        t.phase=Phase::Reconciling;
+        if(++t.failures>=3)FailTether(t);
+    };
+    return Dispatch(function,std::move(done),std::move(invalid),std::move(args)...);
+}
+void FinishDisconnect(RE::FormID id){
+    auto& tether=tethers.at(id);
+    if(!tether.anchorAfterDisconnect){tethers.erase(id);return;}
+    auto* actor=RE::TESForm::LookupByID<RE::Actor>(id);
+    if(!actor||!Ready(actor)){
+        tether.pending=false;tether.query=false;tether.phase=Phase::Reconciling;
+        return;
+    }
+    tethers.erase(id);
+    Bind(actor,false);
+}
 void StopTether(RE::Actor* actor){
     if(!actor)return;const auto id=actor->GetFormID();auto it=tethers.find(id);if(it==tethers.end())return;
     it->second.wanted=false;if(it->second.phase!=Phase::Active||it->second.retry>0)return;
     if(!leashAvailable){tethers.erase(it);return;}
-    it->second.phase=Phase::Stopping;it->second.pending=true;it->second.elapsed=0;const auto token=it->second.token;
-    if(!Call("DisconnectLeash",[id,token](bool removed){
+    // An ownership query issued before disconnect cannot reconcile its result.
+    it->second.query=false;
+    it->second.phase=Phase::Stopping;it->second.pending=true;it->second.elapsed=0;
+    const auto token=it->second.token=++serial;
+    if(!Mutate(id,token,"DisconnectLeash",[id,token](bool removed){
         Diagnostics::Trace("Disconnect callback target={:08X} token={} removed={} current={}",id,token,removed,Current(id,token));
         if(!Current(id,token))return;
-        if(removed){
-            const bool anchor=tethers.at(id).anchorAfterDisconnect;tethers.erase(id);
-            if(anchor)if(auto* ref=RE::TESForm::LookupByID<RE::Actor>(id))Bind(ref,false);
-            return;
-        }
+        if(removed){FinishDisconnect(id);return;}
         auto& t=tethers.at(id);t.pending=false;t.phase=Phase::Reconciling;t.elapsed=0;t.retry=1.f;
         if(++t.failures>=3)FailTether(t);
     },it->second.anchor?static_cast<RE::Actor*>(nullptr):RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),actor)){
@@ -222,9 +261,9 @@ void StartTether(RE::Actor* actor,bool anchor){
             auto* post=Find(id,b)?RE::TESForm::LookupByID<RE::TESObjectREFR>(b.post):nullptr;
             if(post&&SameSpace(post->GetParentCell(),ref->GetParentCell())){
                 const auto p=post->GetPosition()+RE::NiPoint3{0,0,48};
-                dispatched=Call("ApplyStandaloneLeashAtPosition",complete,ref.get(),post->GetParentCell(),p.x,p.y,p.z,std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,0.f,0.f,8.f);
+                dispatched=Mutate(id,token,"ApplyStandaloneLeashAtPosition",complete,ref.get(),post->GetParentCell(),p.x,p.y,p.z,std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,0.f,0.f,8.f);
             }
-        }else dispatched=Call("ApplyStandaloneLeash",complete,RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),ref.get(),std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,true,0.f,0.f,8.f);
+        }else dispatched=Mutate(id,token,"ApplyStandaloneLeash",complete,RE::PlayerCharacter::GetSingleton()->As<RE::Actor>(),ref.get(),std::string("Leash/neck_rope.nif"),std::string("NPC Spine2 [Spn2]"),std::string("Leash1_0"),std::string("Leash1_1_"),100.f,220.f,true,true,0.f,0.f,8.f);
         if(!dispatched){
             tethers.erase(id);if(anchor)Release(ref.get());Notify("牵引接口调用失败，未进入牵引状态");
         }
@@ -233,7 +272,7 @@ void StartTether(RE::Actor* actor,bool anchor){
 void Unleashed(RE::FormID id,std::uint64_t epoch,std::uint64_t sequence){
     Diagnostics::Trace("Unleash event target={:08X} epoch={} sequence={} currentEpoch={}",id,epoch,sequence,session.load());
     if(session.load()!=epoch)return;auto it=tethers.find(id);
-    if(it!=tethers.end()&&it->second.born<sequence&&it->second.phase!=Phase::Applying&&it->second.phase!=Phase::Checking&&!it->second.pending)tethers.erase(it);
+    if(it!=tethers.end()&&it->second.born<sequence&&!it->second.anchorAfterDisconnect&&it->second.phase!=Phase::Applying&&it->second.phase!=Phase::Checking&&!it->second.pending)tethers.erase(it);
 }
 struct LeashEvents final:RE::BSTEventSink<SKSE::ModCallbackEvent>{
     RE::BSEventNotifyControl ProcessEvent(const SKSE::ModCallbackEvent* event,RE::BSTEventSource<SKSE::ModCallbackEvent>*)override{
@@ -286,7 +325,12 @@ bool Release(RE::Actor* actor){
     if(!actor->IsDead()&&(actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kRestrained||
         actor->AsActorState()->GetLifeState()==RE::ACTOR_LIFE_STATE::kAlive))actor->SetLifeState(static_cast<RE::ACTOR_LIFE_STATE>(b.life));
     actor->EnableAI(b.ai);
-    if(!actor->IsDead()){actor->NotifyAnimationGraph("IdleForceDefaultState");if(b.ai)actor->EvaluatePackage(false,false);}return true;
+    if(!actor->IsDead()){actor->NotifyAnimationGraph("IdleForceDefaultState");if(b.ai)actor->EvaluatePackage(false,false);}
+    if(b.notifyRelease){
+        if(Busy(actor))Notify("本地束缚已解除，绳索清理尚未确认");
+        else Notify(b.pacified?"已解除捕获并恢复原状态":"已解除固定");
+    }
+    return true;
 }
 void ReleaseAll(){
     std::vector<RE::FormID> ids;{std::scoped_lock lock(mutex);for(auto& [id,b]:bindings){b.releaseRequested=true;ids.push_back(id);}}
@@ -303,7 +347,20 @@ void CheckTether(RE::Actor* actor){
         if(!Current(id,token))return;auto& t=tethers.at(id);t.query=false;
         if(t.phase!=Phase::Active&&t.phase!=Phase::Reconciling&&t.phase!=Phase::Failed)return;
         if(t.pending)return;
-        if(!owned){tethers.erase(id);return;}
+        if(!owned){
+            if(!t.anchorAfterDisconnect){tethers.erase(id);return;}
+            // GetLeashHolder also returns a non-player result for a foreign rope.
+            auto* ref=RE::TESForm::LookupByID<RE::Actor>(id);
+            if(!ref||!Ready(ref))return;
+            t.query=true;t.elapsed=0;
+            if(!Call("IsLeashed",[id,token](bool occupied){
+                if(!Current(id,token))return;
+                if(occupied){tethers.erase(id);Notify("目标已有其他牵引，已取消改接固定桩");return;}
+                FinishDisconnect(id);
+            },ref)){t.query=false;t.retry=1.f;if(++t.failures>=3)FailTether(t);}
+            return;
+        }
+        if(t.uncertainAnchor){FailTether(t);return;} // Occupancy alone cannot identify a post rope.
         t.phase=Phase::Active;t.elapsed=0;
         if(t.wanted)t.failures=0; // A positive ownership query does not undo failed disconnect attempts.
     },actor)){tether.query=false;tether.retry=1.f;if(++tether.failures>=3)FailTether(tether);}
@@ -393,23 +450,38 @@ void Initialize(){
 }
 void Save(SKSE::SerializationInterface* save){
     {std::scoped_lock lock(mutex);save->OpenRecord('BIND',2);save->WriteRecordData(static_cast<std::uint32_t>(bindings.size()));
-    for(const auto& [id,b]:bindings){for(auto v:{id,b.post,b.cell,b.flags,b.life,std::uint32_t(b.ai),b.oldHands,b.priorCuffs,std::uint32_t(b.pacified),std::uint32_t(b.releaseRequested),std::uint32_t(b.teammate),std::uint32_t(b.teammateSaved)})save->WriteRecordData(v);
+    for(const auto& [id,b]:bindings){const std::uint32_t release=b.notifyRelease?2u:std::uint32_t(b.releaseRequested);
+        for(auto v:{id,b.post,b.cell,b.flags,b.life,std::uint32_t(b.ai),b.oldHands,b.priorCuffs,std::uint32_t(b.pacified),release,std::uint32_t(b.teammate),std::uint32_t(b.teammateSaved)})save->WriteRecordData(v);
         for(float v:{b.position.x,b.position.y,b.position.z,b.angle.x,b.angle.y,b.angle.z})save->WriteRecordData(v);}}
     // A preflight check has not created anything: never claim an unrelated rope on load.
     save->OpenRecord('TETH',2);save->WriteRecordData(static_cast<std::uint32_t>(std::count_if(tethers.begin(),tethers.end(),[](const auto& pair){return pair.second.phase!=Phase::Checking;})));
-    for(const auto& [id,t]:tethers)if(t.phase!=Phase::Checking){save->WriteRecordData(id);save->WriteRecordData(std::uint32_t(t.wanted));save->WriteRecordData(std::uint32_t(t.anchor));}
+    for(const auto& [id,t]:tethers)if(t.phase!=Phase::Checking){
+        // A VM mutation can still be in flight when this snapshot is taken.
+        const bool uncertain=t.uncertainAnchor||(t.anchor&&t.pending);
+        const std::uint32_t intent=t.anchorAfterDisconnect?2u:std::uint32_t(t.wanted);
+        save->WriteRecordData(id);save->WriteRecordData(intent);save->WriteRecordData(std::uint32_t(uncertain?2:t.anchor));}
 }
 bool Load(SKSE::SerializationInterface* save,std::uint32_t type,std::uint32_t version,std::uint32_t length){
     if(type!='BIND'&&type!='TETH')return false;if(version<1||version>2||length<4)return true;
     const auto stride=type=='BIND'?(version==1?64u:72u):(version==1?8u:12u);std::uint32_t count=0;if(save->ReadRecordData(&count,4)!=4||length!=4+std::uint64_t(count)*stride)return true;
     for(unsigned i=0;i<count;++i){
-        if(type=='TETH'){std::uint32_t id=0,wanted=0,resolved=0,anchor=0;if(save->ReadRecordData(&id,4)!=4||save->ReadRecordData(&wanted,4)!=4||(version==2&&save->ReadRecordData(&anchor,4)!=4))break;if(save->ResolveFormID(id,resolved)){tethers[resolved]={Phase::Reconciling,wanted!=0,++serial};tethers[resolved].born=leashEventsSeen.load();tethers[resolved].anchor=anchor!=0;}continue;}
+        if(type=='TETH'){
+            std::uint32_t id=0,intent=0,resolved=0,anchor=0;
+            if(save->ReadRecordData(&id,4)!=4||save->ReadRecordData(&intent,4)!=4||(version==2&&save->ReadRecordData(&anchor,4)!=4))break;
+            if(save->ResolveFormID(id,resolved)){
+                auto& t=tethers[resolved];t={Phase::Reconciling,intent==1,++serial};
+                t.born=leashEventsSeen.load();t.anchor=anchor!=0;t.uncertainAnchor=anchor==2;
+                t.anchorAfterDisconnect=version==2&&!t.anchor&&intent==2;
+            }
+            continue;
+        }
         std::array<std::uint32_t,12> values{};std::array<float,6> coordinates;const auto valueBytes=version==1?40u:48u;
         if(save->ReadRecordData(values.data(),valueBytes)!=valueBytes||save->ReadRecordData(coordinates.data(),24)!=24)break;
         if(!std::all_of(coordinates.begin(),coordinates.end(),[](float n){return std::isfinite(n);})||(values[4]!=0&&values[4]!=6))continue;
         RE::FormID id;if(!save->ResolveFormID(values[0],id))continue;
         Binding b;save->ResolveFormID(values[1],b.post);save->ResolveFormID(values[2],b.cell);save->ResolveFormID(values[6],b.oldHands);
         b.flags=values[3]&static_cast<unsigned>(flagsMask);b.life=values[4];b.ai=values[5]!=0;b.priorCuffs=values[7];b.pacified=values[8]!=0;b.releaseRequested=values[9]!=0||(!b.cell&&!b.pacified)||(values[1]&&!b.post);
+        b.notifyRelease=version==2&&values[9]==2;
         b.teammate=values[10]!=0;b.teammateSaved=values[11]!=0;
         b.position={coordinates[0],coordinates[1],coordinates[2]};b.angle={coordinates[3],coordinates[4],coordinates[5]};std::scoped_lock lock(mutex);bindings[id]=b;
     }return true;

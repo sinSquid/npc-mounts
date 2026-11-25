@@ -211,6 +211,25 @@ void ResetPose(RE::Actor* actor,State& state){
     actor->AddToFaction(mountFaction,0);state.animation=0;
     StopMotion(actor);actor->NotifyAnimationGraph("IdleForceDefaultState");
 }
+RE::NiPoint3 DismountOffset(RE::Actor* player,float angle)
+{
+    auto* cc=player->GetCharController();
+    auto* world=cc?cc->GetHavokWorld():nullptr;
+    if(!world)return {};
+    const auto position=player->GetPosition();
+    for (float side : {1.f, -1.f}) {
+        auto candidate = position + RE::NiPoint3{std::cos(angle) * transitionSideOffset * side, -std::sin(angle) * transitionSideOffset * side, 0.f};
+        RE::bhkPickData floor{};
+        if (!Ray(world, candidate + RE::NiPoint3{0.f,0.f,96.f}, candidate - RE::NiPoint3{0.f,0.f,96.f}, floor)) continue;
+        if (floor.rayOutput.normal.Dot3(RE::hkVector4(0.f,0.f,1.f,0.f)) < 0.6f) continue;
+        candidate.z += 96.f - 192.f * floor.rayOutput.hitFraction;
+        if (std::abs(candidate.z - position.z) > 64.f) continue;
+        RE::bhkPickData wall{};
+        if (Ray(world, position + RE::NiPoint3{0.f,0.f,48.f}, candidate + RE::NiPoint3{0.f,0.f,48.f}, wall)) continue;
+        return candidate-position+RE::NiPoint3{0.f,0.f,2.f};
+    }
+    return {};
+}
 bool Dismount(bool emergency = false, bool = true)
 {
     RideCollision::Clear();
@@ -235,26 +254,7 @@ bool Dismount(bool emergency = false, bool = true)
         return true;
     }
     auto position = player->GetPosition();
-    if (!emergency && downActive) position=position+downOffset;
-    else if (!emergency) {
-        auto* cc = player->GetCharController();
-        // A clear side position is optional. Failure leaves the player at the
-        // current position; it must never block dismount, including in mid-air.
-        const float angle = mount->GetAngleZ();
-        for (float side : {1.f, -1.f}) {
-            auto candidate = position + RE::NiPoint3{std::cos(angle) * 96.f * side, -std::sin(angle) * 96.f * side, 0.f};
-            auto* world = cc ? cc->GetHavokWorld() : nullptr;
-            if (!world) break;
-            RE::bhkPickData floor{};
-            if (!Ray(world, candidate + RE::NiPoint3{0.f,0.f,96.f}, candidate - RE::NiPoint3{0.f,0.f,96.f}, floor)) continue;
-            if (floor.rayOutput.normal.Dot3(RE::hkVector4(0.f,0.f,1.f,0.f)) < 0.6f) continue;
-            candidate.z += 96.f - 192.f * floor.rayOutput.hitFraction;
-            if (std::abs(candidate.z - position.z) > 64.f) continue;
-            RE::bhkPickData wall{};
-            if (Ray(world, position + RE::NiPoint3{0.f,0.f,48.f}, candidate + RE::NiPoint3{0.f,0.f,48.f}, wall)) continue;
-            position = candidate + RE::NiPoint3{0.f,0.f,2.f}; break;
-        }
-    }
+    if (!emergency) position=position+(downActive?downOffset:DismountOffset(player,mount->GetAngleZ()));
     player->RemoveFromFaction(riderFaction);
     StopMotion(player);
     player->NotifyAnimationGraph("IdleForceDefaultState");
@@ -277,7 +277,7 @@ bool Dismount(bool emergency = false, bool = true)
 void BeginDismount() {
     auto mount=ridden.get();if(!mount||downActive||upActive)return;
     downActive=true;transitionTime=0.f;dismountHold.Release();RideDrive::ResetInput();
-    const float angle=mount->GetAngleZ();downOffset={std::cos(angle)*transitionSideOffset,-std::sin(angle)*transitionSideOffset,0.f};
+    downOffset=DismountOffset(RE::PlayerCharacter::GetSingleton(),mount->GetAngleZ());
     Seat::Entering(false);Seat::Update(RE::PlayerCharacter::GetSingleton(),mount.get(),config,0.f,downOffset);
 }
 bool SeatOutputTimedOut(float delta){
@@ -402,7 +402,6 @@ void Mount(RE::Actor* actor)
     WaterRide::Begin(player,actor);
     RideDrive::Begin();
     RideCollision::Update(player,actor);
-    Travel::Remember(actor);
     mountControllerFlags = actor->GetCharController()->flags.underlying() & static_cast<std::uint32_t>(proxyPhysics);
     playerControllerFlags = cc->flags.underlying() & static_cast<std::uint32_t>(ridePhysics);
     firstPersonBefore = RE::PlayerCamera::GetSingleton()->IsInFirstPerson();
@@ -515,6 +514,7 @@ void Tick(RE::Actor* player, float delta)
         Seat::Update(player,mount.get(),config,upActive?1.f-t:t,downOffset);
         if(t>=1.f){
             if(upActive){
+                Travel::Remember(mount.get());
                 upActive=false;transitionTime=0.f;
                 lastSeatWrite=Seat::WriteSequence();seatSilentTime=0.f;
                 playerFlags.reset(downFlags);playerFlags.set(static_cast<RE::Actor::BOOL_FLAGS>(downOriginalFlags));

@@ -27,7 +27,7 @@ namespace RE{
 struct NiPoint3{float x,y,z;};
 using FormID=unsigned;template<class T>using BSTSmartPointer=std::shared_ptr<T>;struct NiAVObject{};
 struct Bone{std::string name;};struct Skeleton{std::vector<Bone>bones;std::vector<int>parentIndices;};struct Setup{std::shared_ptr<Skeleton>animationSkeleton;};struct Character{std::shared_ptr<Setup>setup;};struct BShkbAnimationGraph{Character characterInstance;};struct BSAnimationGraphManager{std::vector<std::shared_ptr<BShkbAnimationGraph>>graphs;};
-struct Actor{unsigned id=1;NiAVObject root;std::shared_ptr<BSAnimationGraphManager>manager=std::make_shared<BSAnimationGraphManager>();unsigned GetFormID(){return id;}NiAVObject* Get3D(){return &root;}bool GetAnimationGraphManager(std::shared_ptr<BSAnimationGraphManager>& out){out=manager;return true;}};
+struct Actor{unsigned id=1;NiAVObject root;NiAVObject* model=&root;unsigned graphQueries=0;std::shared_ptr<BSAnimationGraphManager>manager=std::make_shared<BSAnimationGraphManager>();unsigned GetFormID(){return id;}NiAVObject* Get3D(){return model;}bool GetAnimationGraphManager(std::shared_ptr<BSAnimationGraphManager>& out){++graphQueries;out=manager;return true;}};
 struct hkbGenerator{};struct hkbContext{Character* character;};struct hkbGeneratorOutput{struct Master{int numBytes,numTracks;std::uint8_t unused[8];};struct Header{std::int16_t capacity,numData,dataOffset,elementSizeBytes;float onFraction;std::int8_t flags,type;std::uint16_t pad;};struct Tracks{Master masterHeader;Header trackHeaders[1];};Tracks* tracks;};}
 namespace spdlog{template<class...T>void warn(const char*,T...){}template<class...T>void info(const char*,T...){}}
 ${globals}
@@ -37,7 +37,7 @@ namespace RE{constexpr std::uintptr_t VTABLE_hkbBehaviorGraph[]{1};}
 namespace REL{template<class T>struct Relocation{Relocation(T){}template<class F>std::uintptr_t write_vfunc(int slot,F){assert(slot==0x17);++hookWrites;return reinterpret_cast<std::uintptr_t>(&nativeOriginal);}};}
 bool Bind(RE::Actor*,bool publish=true);
 ${take('void Reindex(')}
-${['void Blend(','void Sample(','std::string_view Canonical(','std::string OverlayName(','bool OverlayBone(','void GeneratePose(','bool Available(','bool Install(','std::vector<GraphStamp> Snapshot(','bool Matches(','bool BindMode(','bool Bind(','bool BindBound(','bool Resume(','void Update(','void UpdateBound(','bool Anchor(','bool Working(','void Remove(','void Clear('].map(take).join('\n')}
+${['void Blend(','void Sample(','std::string_view Canonical(','std::string OverlayName(','bool OverlayBone(','void GeneratePose(','bool Available(','bool Install(','std::vector<GraphStamp> Snapshot(','bool Matches(','bool BindMode(','bool Bind(','bool BindBound(','bool Resume(','bool WaitingForRetry(','bool StaticAnchor(','void Update(','void UpdateBound(','bool Anchor(','bool Working(','void Remove(','void Clear('].map(take).join('\n')}
 int main(int argc,char** argv){assert(argc==2||argc==3);
  if(argc==3){assert(!Install(argv[2])&&!Available()&&hookWrites==0);std::puts("PASS: original failing J bank rejected by production Install.");}
  std::ifstream f(argv[1],std::ios::binary);std::string good((std::istreambuf_iterator<char>(f)),{});assert(!good.empty());
@@ -76,6 +76,8 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
   actors.at(1).time=clips[gait].duration*.75f;assert(Anchor(&a,anchor,.5f));assert(std::abs(anchor.z-rest[2])<1e-5);
  }
  for(int gait=0;gait<7;++gait)for(int step=0;step<30;++step){Update(&a,gait,1.f/60);const auto before=actors.at(1).pose;const auto expected=PosePoint(before,parents,spine);assert(Anchor(&a,anchor,1));assert(std::abs(anchor.x-expected[0])<1e-5f);assert(std::memcmp(before.data(),actors.at(1).pose.data(),sizeof(Frame))==0);}
+ RE::NiPoint3 fixed;assert(StaticAnchor(&a,fixed)&&fixed.y==anchor.y&&fixed.z==anchor.z);
+ RE::NiAVObject replacement;a.model=&replacement;assert(!StaticAnchor(&a,fixed));a.model=&a.root;
  const unsigned header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes,std::byte{0x33});auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};auto before=b;GeneratePose(nullptr,ctx,nullptr,out,0);assert(memcmp(b.data()+64,actors.at(1).pose.data(),sizeof(Frame))==0);assert(memcmp(b.data()+64+sizeof(Frame),before.data()+64+sizeof(Frame),(count-99)*sizeof(Pose))==0);
  // Graph replacement must not repeatedly restart idle/time while gait stays moving.
  // Exercise sampling AND the generated output, not only the faction/desired gait.
@@ -97,6 +99,14 @@ int main(int argc,char** argv){assert(argc==2||argc==3);
  auto name=sk->bones[5].name;sk->bones[5].name="unsupported";assert(!Bind(&a)&&actors.empty());for(int i=0;i<10;i++)Update(&a,0,.01f);assert(actors.empty());sk->bones[5].name=name;assert(Bind(&a));int parent=sk->parentIndices[5];sk->parentIndices[5]=98;assert(!Bind(&a));sk->parentIndices[5]=parent;assert(Bind(&a));Remove(1);assert(actors.empty()&&retries.empty());}
  {RE::Actor giant;giant.id=2;auto g=std::make_shared<RE::BShkbAnimationGraph>();g->characterInstance.setup=std::make_shared<RE::Setup>();auto sk=std::make_shared<RE::Skeleton>();g->characterInstance.setup->animationSkeleton=sk;giant.manager->graphs.push_back(g);
   for(unsigned i=0;i<bones;++i)if(OverlayBone(names[i].data())){sk->bones.push_back({names[i].data()});sk->parentIndices.push_back(sk->parentIndices.empty()?-1:0);}
+  const auto original=sk->bones.front().name;
+  sk->bones.front().name="missing";
+  for(int i=0;i<180;++i)UpdateBound(&giant,1.f/60);
+  assert(actors.empty()&&giant.graphQueries>=4&&giant.graphQueries<=8);
+  auto beforeQueries=giant.graphQueries;Update(&giant,0,.01f);assert(giant.graphQueries>beforeQueries);
+  sk->bones.front().name=original;UpdateBound(&giant,.01f);assert(actors.at(2).bound);
+  sk->bones.front().name="missing";assert(!BindBound(&giant));sk->bones.front().name=original;
+  RE::NiAVObject rebuilt;giant.model=&rebuilt;UpdateBound(&giant,.01f);assert(actors.at(2).root==&rebuilt);
   assert(sk->bones.size()>=15&&sk->bones.size()<99);assert(BindBound(&giant));UpdateBound(&giant,.016f);assert(actors.at(2).bound&&actors.at(2).gait==int(boundClip));
   const unsigned count=static_cast<unsigned>(sk->bones.size()),header=64,bytes=header+count*sizeof(Pose);std::vector<std::byte>b(bytes);auto* t=(RE::hkbGeneratorOutput::Tracks*)b.data();t->masterHeader={int(bytes),3,{}};auto& h=t->trackHeaders[2];h={short(count),short(count),64,48,1,0,1,0};RE::hkbGeneratorOutput out{t};RE::hkbContext ctx{&g->characterInstance};GeneratePose(nullptr,ctx,nullptr,out,0);assert(actors.at(2).wrote);Remove(2);}
  Clear();assert(actors.empty()&&retries.empty()&&graphOwners.empty());std::puts("PASS: real 8-clip bank; cached centreline anchor, graph owner lifecycle, production 99/126-bone binding, helper alias, parent/name rejection, 30/60/144 FPS sampling, output bounds, extra bones preserved and retry/removal.");}

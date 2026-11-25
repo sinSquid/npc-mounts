@@ -8,6 +8,7 @@ bool BindBound(RE::Actor* actor);
 bool Resume(RE::Actor* actor);
 void Update(RE::Actor* actor,int gait,float delta);
 void UpdateBound(RE::Actor* actor,float delta);
+bool StaticAnchor(RE::Actor* actor,RE::NiPoint3& point);
 bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway);
 bool Working(RE::Actor* actor);
 void LogOutput();

@@ -31,7 +31,8 @@ ${take('enum class Phase ')};
 ${take('struct Tether ')};
 std::unordered_map<RE::FormID,Tether> tethers;std::uint64_t serial=0;bool leashAvailable=true,dispatch=true;
 std::atomic_uint64_t leashEventsSeen{0},session{1};
-struct Pending {std::string name;std::function<void(bool)> callback;};std::deque<Pending> queue;
+struct Pending {std::string name;std::function<void(bool)> callback;std::function<void()> invalid;};std::deque<Pending> queue;
+bool actorReady=true;bool Ready(RE::Actor*){return actorReady;}
 void Notify(const char*){}bool Eligible(RE::Actor* a){return a!=nullptr;}bool Bound(RE::Actor* a){return a&&a->bound;}
 struct Binding{unsigned post=9;};bool Find(unsigned,Binding&){return true;}
 unsigned releases=0;bool Release(RE::Actor* a){++releases;a->bound=false;return true;}
@@ -41,9 +42,13 @@ ${take('bool SameSpace(')}
 ${take('bool Busy(')}
 ${take('bool Leashed(')}
 template<class... Args>bool Call(const char* name,std::function<void(bool)> fn,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn)});return true;}
+template<class... Args>bool Dispatch(const char* name,std::function<void(bool)> fn,std::function<void()> invalid,Args...){if(!dispatch)return false;queue.push_back({name,std::move(fn),std::move(invalid)});return true;}
+void Invalid(){auto fn=queue.front().invalid;assert(fn);queue.pop_front();fn();}
 void Reply(const char* name,bool value){assert(!queue.empty()&&queue.front().name==name);auto fn=queue.front().callback;queue.pop_front();fn(value);if(std::string(name)=="SetRagdollOverride"){while(!queue.empty()&&(queue.front().name=="SetLeashFollower"||queue.front().name=="SetPreventOverstretchOverride")){auto next=queue.front().callback;queue.pop_front();next(true);}}}
 ${take('bool Current(')}
 ${take('void FailTether(')}
+template<class... Args>${take('bool Mutate(')}
+${take('void FinishDisconnect(')}
 ${take('void StopTether(')}
 ${take('void StartTether(')}
 ${take('void CheckTether(')}
@@ -75,6 +80,16 @@ int main(){RE::Actor actor;RE::known=&actor;
  StartTether(&actor);auto old=queue.front().callback;queue.clear();tethers.clear();++serial;
  StartTether(&actor);const auto token=tethers.at(1).token;old(true);assert(tethers.at(1).token==token);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",false);
  StopTether(&actor);Reply("DisconnectLeash",true);assert(tethers.empty());
+ StartTether(&actor);Reply("IsLeashed",false);auto staleInvalid=queue.front().invalid;Invalid();
+ assert(!tethers.at(1).pending);CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
+ actor.bound=true;StartTether(&actor,true);Reply("IsLeashed",false);staleInvalid();assert(tethers.at(1).pending);
+ Invalid();CheckTether(&actor);Reply("IsLeashed",true);assert(tethers.at(1).phase==Phase::Failed&&!tethers.at(1).pending&&queue.empty());
+ ToggleTether(&actor);CheckTether(&actor);Reply("IsLeashed",false);assert(!Busy(&actor));actor.bound=false;
+ tethers[1]={Phase::Active,true,++serial};StopTether(&actor);Invalid();CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
+ // A query from before a malformed disconnect must not finish reconciliation.
+ tethers[1]={Phase::Active,true,++serial};CheckTether(&actor);auto staleQuery=queue.front().callback;queue.pop_front();
+ StopTether(&actor);Invalid();staleQuery(false);assert(Busy(&actor)&&tethers.at(1).phase==Phase::Reconciling);
+ CheckTether(&actor);Reply("GetLeashHolder",false);assert(!Busy(&actor));
  // Preflight timeout cannot create anything; its late callback must be inert.
  StartTether(&actor);AdvanceTethers(10);assert(!Busy(&actor));Reply("IsLeashed",false);assert(queue.empty());
  // Accepted creation is never dispatched twice. B/F cancellation survives a late result.
@@ -112,6 +127,16 @@ int main(){RE::Actor actor;RE::known=&actor;
   assert(!Busy(&actor)&&queue.empty());}
  StartTether(&actor);Reply("IsLeashed",false);Reply("ApplyStandaloneLeash",true);Reply("SetRagdollOverride",true);
  tethers.at(1).anchorAfterDisconnect=true;StopTether(&actor);Reply("DisconnectLeash",true);assert(anchorCalls==1&&tethers.empty()&&queue.empty());
+ for(bool foreign:{false,true})for(bool cancel:{false,true}){
+  auto before=anchorCalls;tethers[1]={Phase::Reconciling,false,++serial};tethers.at(1).anchorAfterDisconnect=true;
+  Unleashed(1,1,++leashEventsSeen);assert(Busy(&actor));
+  CheckTether(&actor);Reply("GetLeashHolder",false);if(cancel)ToggleTether(&actor,true);
+  Reply("IsLeashed",foreign);assert(queue.empty()&&!Busy(&actor)&&anchorCalls==before+(!cancel&&!foreign));
+ }
+ tethers[1]={Phase::Active,false,++serial};tethers.at(1).anchorAfterDisconnect=true;
+ auto before=anchorCalls;StopTether(&actor);actorReady=false;Reply("DisconnectLeash",true);
+ assert(Busy(&actor)&&anchorCalls==before);actorReady=true;CheckTether(&actor);Reply("GetLeashHolder",false);
+ Reply("IsLeashed",false);assert(!Busy(&actor)&&anchorCalls==before+1&&queue.empty());
  std::puts("PASS: actual tether lifecycle, player-to-post handoff, world-anchor creation/rollback and 1000 cancellation/reconciliation cycles; invalid targets, timeout/retry bounds and stale callbacks. Not VM/engine QA.");
 }
 `);

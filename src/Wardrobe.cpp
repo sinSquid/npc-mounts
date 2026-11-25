@@ -11,8 +11,7 @@ struct Snapshot {RE::FormID left{},right{};bool drawn{};std::vector<Item> clothi
 std::unordered_map<RE::FormID,Snapshot> snapshots;
 std::mutex mutex;
 using Inventory=decltype(std::declval<RE::Actor*>()->GetInventory());
-RE::ExtraDataList* Instance(const Inventory& inventory,const Item& saved){
-    auto* object=RE::TESForm::LookupByID<RE::TESBoundObject>(saved.form);if(!object)return nullptr;
+RE::ExtraDataList* Instance(const Inventory& inventory,const Item& saved,RE::TESBoundObject* object){
     auto it=inventory.find(object);if(it==inventory.end()||!it->second.second||!it->second.second->extraLists)return nullptr;
     RE::ExtraDataList* fallback=nullptr;
     for(auto* extra:*it->second.second->extraLists)if(extra){
@@ -74,7 +73,14 @@ void Restore(RE::Actor* actor){
     auto* equip=RE::ActorEquipManager::GetSingleton();if(!equip)return;
     Snapshot saved;{std::scoped_lock lock(mutex);auto it=snapshots.find(actor->GetFormID());if(it==snapshots.end())return;saved=std::move(it->second);snapshots.erase(it);}
     const auto inventory=saved.clothing.empty()?Inventory{}:actor->GetInventory();
-    for(const auto& item:saved.clothing)if(auto* armor=RE::TESForm::LookupByID<RE::TESObjectARMO>(item.form))equip->EquipObject(actor,armor,Instance(inventory,item),1,nullptr,false,false,false,true);
+    for(const auto& item:saved.clothing){
+        auto* armor=RE::TESForm::LookupByID<RE::TESObjectARMO>(item.form);
+        const auto entry=inventory.find(armor);
+        if(entry==inventory.end()||entry->second.first<=0)continue;
+        auto* instance=Instance(inventory,item,armor);
+        if(item.unique!=0xFFFFFFFF&&!instance)continue;
+        equip->EquipObject(actor,armor,instance,1,nullptr,false,false,false,true);
+    }
     const auto equipHand=[&](RE::FormID id,bool left){
         auto* form=RE::TESForm::LookupByID(id);if(!form)return;
         auto* slot=RE::TESForm::LookupByID<RE::BGSEquipSlot>(left?0x13F43:0x13F42);

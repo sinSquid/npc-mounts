@@ -47,6 +47,7 @@ bool Landing(RE::Actor* player,RE::Actor* actor,RE::NiPoint3& result){
         RE::bhkPickData wall{},floor{};
         const auto top=point+RE::NiPoint3{0,0,64},bottom=point-RE::NiPoint3{0,0,160};
         if(!Mounts::Ray(world,top,bottom,floor))continue;
+        if(!(floor.rayOutput.normal.Dot3(RE::hkVector4(0.f,0.f,1.f,0.f))>=0.6f))continue;
         const auto ground=top+(bottom-top)*floor.rayOutput.hitFraction;
         const RE::NiPoint3 torso{0,0,48.f*scale},head{0,0,128.f*scale};
         if(Mounts::Ray(world,origin+torso,ground+torso,wall)||

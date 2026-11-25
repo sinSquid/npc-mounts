@@ -88,7 +88,7 @@ inline void Update(RE::Actor* player,RE::Actor* mount,float delta){
     const float water=player->GetWaterHeight();
     const bool onWater=!air&&std::isfinite(water)&&player->GetPosition().z<=water+4.f;
     RE::NiPoint3 back;float target=0.f;
-    if(onWater&&Crawl::Anchor(mount,back,0.f))target=std::max(0.f,back.z)*root->world.scale/3.f;
+    if(onWater&&Crawl::StaticAnchor(mount,back))target=std::max(0.f,back.z)*root->world.scale/3.f;
     const float blend=1.f-std::exp(-std::max(delta,0.f)/.15f);
     depth+=(target-depth)*blend;
     if(std::abs(depth-target)<.01f)depth=target;

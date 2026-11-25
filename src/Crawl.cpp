@@ -26,7 +26,7 @@ std::unordered_map<RE::FormID,ActorPose> actors;
 std::unordered_map<const void*,RE::FormID> graphOwners;
 RE::NiPoint3 anchorPoint{0,0,0};
 unsigned anchorBone=0;
-struct Retry{const RE::NiAVObject* root{};float remaining=0;};
+struct Retry{const RE::NiAVObject* root{};float remaining=0;bool bound=false;};
 std::unordered_map<RE::FormID,Retry> retries;
 std::mutex mutex;
 PoseAudit audit;
@@ -180,7 +180,7 @@ bool BindMode(RE::Actor* actor,bool publish,bool bound){
     if(result.graphs.empty()){
         std::scoped_lock lock(mutex);auto& retry=retries[actor->GetFormID()];
         if(retry.root!=result.root)spdlog::warn("Crawl skeleton incompatible ref={:08X}",actor->GetFormID());
-        retry={result.root,1.f};actors.erase(actor->GetFormID());Reindex();return false;
+        retry={result.root,1.f,bound};actors.erase(actor->GetFormID());Reindex();return false;
     }
     std::scoped_lock lock(mutex);
     const auto old=actors.find(actor->GetFormID());
@@ -201,11 +201,16 @@ bool Resume(RE::Actor* actor){
     if(it==actors.end()||it->second.publish)return false;
     it->second.publish=true;return true;
 }
+bool WaitingForRetry(RE::Actor* actor,float delta,bool bound){
+    std::scoped_lock lock(mutex);
+    auto it=retries.find(actor->GetFormID());
+    if(it==retries.end()||it->second.bound!=bound||it->second.root!=actor->Get3D())return false;
+    it->second.remaining-=std::clamp(delta,0.f,.1f);
+    return it->second.remaining>0.f;
+}
 void Update(RE::Actor* actor,int gait,float delta){
     if(!actor)return;
-    {std::scoped_lock lock(mutex);auto it=retries.find(actor->GetFormID());if(it!=retries.end()&&it->second.root==actor->Get3D()){
-        it->second.remaining-=std::clamp(delta,0.f,.1f);if(it->second.remaining>0)return;
-    }}
+    if(WaitingForRetry(actor,delta,false))return;
     bool bind=false;{
         RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;actor->GetAnimationGraphManager(manager);
         std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());
@@ -226,7 +231,7 @@ void Update(RE::Actor* actor,int gait,float delta){
     Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
 }
 void UpdateBound(RE::Actor* actor,float delta){
-    if(!actor)return;
+    if(!actor||WaitingForRetry(actor,delta,true))return;
     bool bind=false;{
         RE::BSTSmartPointer<RE::BSAnimationGraphManager> manager;actor->GetAnimationGraphManager(manager);
         std::scoped_lock lock(mutex);auto it=actors.find(actor->GetFormID());
@@ -235,6 +240,13 @@ void UpdateBound(RE::Actor* actor,float delta){
     if(bind&&!BindBound(actor))return;
     std::scoped_lock lock(mutex);auto& state=actors.at(actor->GetFormID());state.time=std::fmod(state.time+std::clamp(delta,0.f,.1f),clips[boundClip].duration);
     Frame next;Sample(clips[boundClip],state.time,next);Blend(state.pose,next,1.f-std::exp(-20.f*std::clamp(delta,0.f,.1f)),state.pose);
+}
+bool StaticAnchor(RE::Actor* actor,RE::NiPoint3& point){
+    if(!actor)return false;
+    std::scoped_lock lock(mutex);
+    const auto it=actors.find(actor->GetFormID());
+    if(it==actors.end()||it->second.root!=actor->Get3D())return false;
+    point=anchorPoint;return true;
 }
 bool Anchor(RE::Actor* actor,RE::NiPoint3& point,float sway){
     if(!actor)return false;

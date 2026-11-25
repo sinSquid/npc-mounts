@@ -1,12 +1,16 @@
 // Execute the real Dismount body with failed floor/wall queries, not a mock Dismount.
 const fs=require('fs'),path=require('path'),assert=require('assert');
 const repo=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(repo,'src/plugin.cpp'),'utf8');
-const start=source.indexOf('bool Dismount(');assert(start>=0);
-let end=source.indexOf('{',start)+1,depth=1;
+const start=source.indexOf('RE::NiPoint3 DismountOffset(');assert(start>=0);
+let end=source.indexOf('{',source.indexOf('bool Dismount('))+1,depth=1;
 while(depth){const c=source[end++];if(c==='{')depth++;if(c==='}')depth--;}
+const beginStart=source.indexOf('void BeginDismount() {',end);
+const beginEnd=source.indexOf('bool SeatOutputTimedOut(',beginStart);
+assert(beginStart>=0&&beginEnd>beginStart);
 const code=`
 #include <cassert>
 #include "../src/Motion.h"
+constexpr float transitionSideOffset=128.f;
 Motion::RideState rideMotion;
 namespace RideCollision {void Clear(){}}
 #include <cmath>
@@ -37,21 +41,27 @@ struct State{int animation=3;};std::unordered_map<int,State> targets;
 void *riderFaction{},*mountFaction{};int ridePhysics=1,proxyPhysics=2;unsigned playerControllerFlags{},mountControllerFlags{};
 bool firstPersonBefore=false,wasAir=false;float jumpTimer{},transitionTime{};
 float playerSpeedDelta=0;bool downActive=false,upActive=false;unsigned downFlags=0,downOriginalFlags=0;RE::NiPoint3 downOffset;HoldGate dismountHold;
-namespace Seat{void Clear(){}}namespace MovementCompat{void End(){}}
-namespace RideDrive{void End(){}}void ApplySpeed(RE::Actor*,float,float& delta){delta=0;}
+int config=0;
+namespace Seat{RE::NiPoint3 offset;void Entering(bool){}void Update(RE::Actor*,RE::Actor*,int,float,RE::NiPoint3 p){offset=p;}void Clear(){}}
+namespace MovementCompat{void End(){}}
+namespace RideDrive{void End(){}void ResetInput(){}}void ApplySpeed(RE::Actor*,float,float& delta){delta=0;}
 int restores=0;void RestoreController(RE::Actor*,int,unsigned){++restores;}void StopMotion(RE::Actor*){}
-bool floorFound=false,wallBlocked=false;int rays=0;
-bool Ray(RE::bhkWorld*,RE::NiPoint3 from,RE::NiPoint3 to,RE::bhkPickData&){++rays;return from.z!=to.z?floorFound:wallBlocked;}
+bool floorFound=false,wallBlocked=false,rightBlocked=false;int rays=0;
+bool Ray(RE::bhkWorld*,RE::NiPoint3 from,RE::NiPoint3 to,RE::bhkPickData&){++rays;return from.x==to.x&&from.y==to.y?floorFound:wallBlocked||(rightBlocked&&to.x>from.x);}
 namespace spdlog{void info(const char*){}}
 ${source.slice(start,end)}
+${source.slice(beginStart,beginEnd)}
 int main(){
- for(int scenario=0;scenario<4;scenario++){
+ for(int scenario=0;scenario<5;scenario++){
   auto mount=std::make_shared<RE::Actor>();ridden.value=mount;targets[1]={};
   auto* p=RE::PlayerCharacter::GetSingleton();p->pos={100,200,300};p->marker=true;p->hasController=scenario!=2;
-  floorFound=scenario!=0;wallBlocked=scenario==1;restores=0;rays=0;
+  floorFound=scenario!=0;wallBlocked=scenario==1;rightBlocked=scenario==4;restores=0;rays=0;
+  BeginDismount();assert(downActive&&Seat::offset==downOffset);
+  auto expected=p->pos+Seat::offset;
   assert(Dismount());assert(!ridden&&!p->marker&&mount->rank==0&&targets.at(1).animation==0&&restores==2);
+  assert(p->pos==expected);
   if(scenario<3)assert((p->pos==RE::NiPoint3{100,200,300}));
-  else assert(p->pos.x==196&&p->pos.z==302);
+  else assert(p->pos.x==(rightBlocked?-28:228)&&p->pos.z==302);
  }
  auto emergency=std::make_shared<RE::Actor>();ridden.value=emergency;targets[1]={};auto* ep=RE::PlayerCharacter::GetSingleton();ep->positionWrites=0;ep->marker=true;
  assert(Dismount(true)&&!ridden&&!ep->marker&&emergency->positionWrites==0&&ep->positionWrites==0);

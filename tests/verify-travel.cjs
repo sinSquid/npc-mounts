@@ -16,7 +16,7 @@ fs.writeFileSync(path.join(root,'build/travel-regression.cpp'),`
 namespace RE{
 enum class BSEventNotifyControl{kContinue};template<class T>struct BSTEventSource{};template<class T>struct BSTEventSink{virtual BSEventNotifyControl ProcessEvent(const T*,BSTEventSource<T>*)=0;};struct PositionPlayerEvent{enum class EVENT_TYPE{kPre,kFinish};EVENT_TYPE type;};
 using FormID=unsigned;struct NiPoint3{float x=0,y=0,z=0;NiPoint3 operator+(NiPoint3 b)const{return{x+b.x,y+b.y,z+b.z};}NiPoint3 operator-(NiPoint3 b)const{return{x-b.x,y-b.y,z-b.z};}NiPoint3 operator*(float v)const{return{x*v,y*v,z*v};}float Length()const{return std::sqrt(x*x+y*y+z*z);}};
-struct Cell{unsigned id=1;bool interior=false;unsigned GetFormID(){return id;}bool IsInteriorCell(){return interior;}};struct World{unsigned id=10;unsigned GetFormID(){return id;}};struct bhkWorld{};struct bhkPickData{struct{float hitFraction=.5f;}rayOutput;};
+struct Cell{unsigned id=1;bool interior=false;unsigned GetFormID(){return id;}bool IsInteriorCell(){return interior;}};struct World{unsigned id=10;unsigned GetFormID(){return id;}};struct bhkWorld{};struct hkVector4{hkVector4(float,float,float,float){}};struct bhkPickData{struct{struct{float z=1;float Dot3(hkVector4)const{return z;}}normal;float hitFraction=.5f;}rayOutput;};
 struct Controller{bhkWorld world;bhkWorld* GetHavokWorld(){return &world;}};
 struct Actor{unsigned id=1;Cell* cell;World* world;NiPoint3 pos;Controller cc;bool ready=true,loaded=true,converted=true,restoring=false,dead=false,deleted=false,disabled=false,kill=false,mounted=false,bound=false,busy=false,riding=false;float scale=1,yaw=0;
  unsigned GetFormID(){return id;}Cell* GetParentCell(){return cell;}World* GetWorldspace(){return world;}NiPoint3 GetPosition(){return pos;}float GetScale(){return scale;}float GetAngleZ(){return yaw;}Controller* GetCharController(){return &cc;}bool IsDead(){return dead;}bool IsDeleted(){return deleted;}bool IsDisabled(){return disabled;}bool IsInKillMove(){return kill;}bool IsOnMount(){return mounted;}void* Get3D(){return loaded?this:nullptr;}};
@@ -25,10 +25,10 @@ struct LoadingMenu{static constexpr int MENU_NAME=1;};struct UI{bool loading=fal
 }
 namespace SKSE{struct SerializationInterface{unsigned tag=0,version=0,value=0;bool resolve=true;void OpenRecord(unsigned t,unsigned v){tag=t;version=v;}void WriteRecordData(unsigned v){value=v;}unsigned ReadRecordData(void* p,unsigned n){std::memcpy(p,&value,n);return n;}bool ResolveFormID(unsigned id,unsigned& out){if(resolve)out=id+100;return resolve;}};}
 namespace spdlog{template<class...T>void info(const char*,T...){}}
-namespace Mounts{bool Converted(RE::Actor* a){return a->converted;}bool Restoring(RE::Actor* a){return a->restoring;}bool Riding(RE::Actor* a){return a->riding;}bool ActorReady(RE::Actor* a){return a->ready;}bool walls=false,floors=true;float groundOffset=0.f;
+namespace Mounts{bool Converted(RE::Actor* a){return a->converted;}bool Restoring(RE::Actor* a){return a->restoring;}bool Riding(RE::Actor* a){return a->riding;}bool ActorReady(RE::Actor* a){return a->ready;}bool walls=false,floors=true;bool steepFirst=false,steepAll=false;float groundOffset=0.f;
  enum class Obstacle{None,HeadPath,Ceiling,Shoulder,TurnedShoulder,InnerShoulder};Obstacle obstacle=Obstacle::None;
  bool Ray(RE::bhkWorld*,const RE::NiPoint3& a,const RE::NiPoint3& b,RE::bhkPickData& hit){
-  if(a.x==b.x&&a.y==b.y&&a.z>b.z){hit.rayOutput.hitFraction=(64.f-groundOffset)/224.f;return floors;}
+  if(a.x==b.x&&a.y==b.y&&a.z>b.z){hit.rayOutput.normal.z=steepAll||(steepFirst&&std::abs(a.x)<.01f)?.3f:1.f;hit.rayOutput.hitFraction=(64.f-groundOffset)/224.f;return floors;}
   if(walls)return true;
   if(obstacle==Obstacle::HeadPath && (a.x!=b.x||a.y!=b.y))return b.z>groundOffset+150.f;
   // A narrow obstruction at x=18 sits between the center and right shoulder rays.
@@ -67,7 +67,7 @@ int main(){using namespace Travel;
  travel();auto before=moves;RE::UI::GetSingleton()->loading=true;run(100);assert(moves==before);RE::UI::GetSingleton()->loading=false;p.ready=false;run(100);assert(moves==before);p.ready=true;run(100);assert(moves==before+1);
  travel();before=moves;a.loaded=true;a.ready=false;run(60);assert(moves==before);a.loaded=false;run(30);assert(moves==before+1);a.loaded=a.ready=true;
  travel();before=moves;Mounts::floors=false;run(600);assert(moves==before&&!tracker.pending);Mounts::floors=true;run(100);assert(moves==before); // no delayed infinite retry
- RE::NiPoint3 landing;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z)<.001f);
+ RE::NiPoint3 landing;Mounts::steepAll=true;assert(!Landing(&p,&a,landing));Mounts::steepAll=false;Mounts::steepFirst=true;assert(Landing(&p,&a,landing)&&std::abs(landing.x)>.01f);Mounts::steepFirst=false;Mounts::walls=true;assert(!Landing(&p,&a,landing));Mounts::walls=false;assert(Landing(&p,&a,landing)&&std::abs(landing.z-p.pos.z)<.001f);
  p.pos={0,0,0};Mounts::groundOffset=24.f;
  for(auto obstacle:{Mounts::Obstacle::HeadPath,Mounts::Obstacle::Ceiling}){
   Mounts::obstacle=obstacle;a.scale=1.f;

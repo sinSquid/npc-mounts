@@ -300,7 +300,7 @@ void Update(RE::Actor* player,RE::Actor* mount,const Settings::Data& config,floa
     if(!p||!m||!std::isfinite(p->world.scale)||!std::isfinite(m->world.scale)||p->world.scale<=0||m->world.scale<=0){suspend();return;}
     auto* saddle=m->GetObjectByName("SaddleBone");auto* back=saddle?saddle:m->GetObjectByName("NPC Spine2 [Spn2]");if(!back){suspend();return;}
     RE::NiPoint3 local;
-    if(!Crawl::Anchor(mount,local,config.riderSway)){suspend();return;}
+    if(!Crawl::StaticAnchor(mount,local)){suspend();return;}
     const float sway=std::clamp(config.riderSway,0.f,1.f);
     // The bank's COM/Spine X differs from the final displayed skeleton (Y4.12 logs).
     // Use the displayed back for lateral attachment, keeping the stable Y/Z anchor.

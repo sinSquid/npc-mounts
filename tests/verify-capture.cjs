@@ -4,7 +4,7 @@ function take(sig){const start=source.indexOf(sig);assert(start>=0,sig);let end=
 const bind=take('bool Bind('),handle=take('bool Handle('),release=take('bool Release(');
 assert(bind.includes('Mounts::Restore(actor)')&&!bind.includes('Mounts::Convert('));
 assert(bind.includes('Wardrobe::Capture(actor,false)'));
-assert(bind.includes('existing.pacified!=pacify')&&bind.includes('Release(actor)'));
+assert(bind.includes('existing.pacified!=pacify')&&bind.includes('ReleaseWithNotice(actor,pacify)'));
 assert(bind.includes('if(!pacify&&!converted)')&&bind.includes('if(!pacify&&!leashAvailable)'));
 assert(!bind.includes('IsHostileToActor'));
 assert(handle.includes('i==1')&&handle.includes('CrosshairPickData::GetSingleton()')&&handle.includes('Bind(actor,true)'));
